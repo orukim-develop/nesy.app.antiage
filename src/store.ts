@@ -1,15 +1,18 @@
-// 키 네임스페이스 (SPEC §7)
-//   session:{date}:{uuid}          — 운동 세션
-//   weight:{date}:{HHMM}           — 체중 측정
-//   inbody:{date}                  — InBody (날짜당 1개)
-//   blood:{date}                   — 혈액검사 (날짜당 1개)
-//   meal:{date}:{slot}:{uuid}      — 식단
-//   recipe:{date}:{uuid}           — AI 추천 레시피
-//   injury:active                  — 현재 활성 부상 (없으면 null)
-//   injury:history:{started_date}  — 과거 부상 이력
+// 키 네임스페이스 (SPEC §7 + 영양제 확장)
+//   session:{date}:{uuid}            — 운동 세션
+//   weight:{date}:{HHMM}             — 체중 측정
+//   inbody:{date}                    — InBody (날짜당 1개)
+//   blood:{date}                     — 혈액검사 (날짜당 1개)
+//   meal:{date}:{slot}:{uuid}        — 식단
+//   recipe:{date}:{uuid}             — AI 추천 레시피
+//   injury:active                    — 현재 활성 부상 (없으면 null)
+//   injury:history:{started_date}    — 과거 부상 이력
+//   supplement:{slug}                — 영양제·약 정기 복용 정의 (upsert)
+//   intake:{date}:{slug}:{HHMM}      — 실제 복용 기록 (한 슬롯 = 한 row)
 
 import type {
   RunCtx, Session, WeightEntry, InBodyEntry, BloodPanel, Meal, Recipe, InjuryRecord,
+  SupplementSchedule, SupplementIntake,
 } from './types.ts';
 import { listAllRows } from './utils.ts';
 
@@ -39,6 +42,14 @@ export const loadAllBlood = (ctx: RunCtx) => loadAll<BloodPanel>(ctx, 'blood:');
 export const loadAllMeals = (ctx: RunCtx) => loadAll<Meal>(ctx, 'meal:');
 export const loadAllRecipes = (ctx: RunCtx) => loadAll<Recipe>(ctx, 'recipe:');
 export const loadInjuryHistory = (ctx: RunCtx) => loadAll<InjuryRecord>(ctx, 'injury:history:');
+export const loadAllSupplements = (ctx: RunCtx) => loadAll<SupplementSchedule>(ctx, 'supplement:');
+
+// 특정 날짜의 모든 복용 기록 한 번에. 7일 윈도우는 호출자가 여러 번 또는 더 넓은 prefix 호출.
+export const loadIntakesForDate = (ctx: RunCtx, date: string) =>
+  loadAll<SupplementIntake>(ctx, `intake:${date}:`);
+
+// 키 prefix 가 'intake:' 인 모든 row — get_state 의 7일 순응도 계산용. 백엔드 페이징은 listAllRows 가 책임.
+export const loadAllIntakes = (ctx: RunCtx) => loadAll<SupplementIntake>(ctx, 'intake:');
 
 export async function getActiveInjury(ctx: RunCtx): Promise<InjuryRecord | null> {
   return ((await ctx.data.get(KEY_INJURY_ACTIVE)) as InjuryRecord | null) ?? null;

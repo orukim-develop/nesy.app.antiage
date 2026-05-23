@@ -132,6 +132,39 @@ export interface InjuryRecord {
   notes?: string;
 }
 
+// ───── 영양제 / 약 (정기 복용 스케줄) ─────
+//
+// 데이터 키:
+//   supplement:{slug}                — 정의 (고유, upsert)
+//   intake:{date}:{slug}:{HHMM}      — 실제 복용 기록 (한 슬롯 = 한 row)
+//
+// slug 는 영문 snake_case (예: 'vitamin_d', 'omega3', 'magnesium_glycinate').
+// schedule_times 길이 = times_per_day. 각 시간은 "HH:MM" 24시간.
+// every_n_days = 1 매일, 2 격일, 7 주 1회. start_date 부터 계산.
+export interface SupplementSchedule {
+  slug: string;
+  display_name: string;
+  times_per_day: number;
+  schedule_times: string[];
+  every_n_days?: number;
+  with_meal?: boolean;
+  start_date?: string;
+  end_date?: string;
+  dose_note?: string;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SupplementIntake {
+  slug: string;
+  date: string;
+  slot: string;
+  taken_at: string;
+  note?: string;
+  created_at: string;
+}
+
 export interface Settings {
   target_weight_min: number;
   target_weight_max: number;
@@ -146,4 +179,6 @@ export interface Settings {
   pr_deadlift_kg: number;
   four_goals: string[];
   next_blood_panel_target: string;
+  timezone: string;
+  supplement_window_minutes: number;
 }

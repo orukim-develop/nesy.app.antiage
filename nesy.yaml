@@ -182,6 +182,99 @@ tools:
           description: "왜 이걸 추천했는지 한 줄. 예: 'LDL 관리 + 단백질 35g 확보 + 정통 일식'."
 
   # ─────────────────────────────────────────────────────────────────────
+  # 영양제 / 약 정기 복용 정의 (upsert)
+  # ─────────────────────────────────────────────────────────────────────
+  - name: set_supplement
+    description: |
+      영양제·비타민·약 정기 복용 스케줄 한 건 등록/수정. 같은 slug 면 덮어쓰기 (upsert).
+      예: 사용자가 "비타민D 매일 아침 9시" 하면 set_supplement(slug='vitamin_d', display_name='비타민D',
+      times_per_day=1, schedule_times=['09:00']). "오메가3 9시·21시 2번" 이면 schedule_times=['09:00','21:00'].
+      매일 아닌 경우 every_n_days 사용 (격일=2, 주 1회=7). 시작/종료일 잡으면 그 사이만 알림.
+      등록 즉시 5분 워커가 check_notifications 호출 시 슬롯 시간 ±30분 안에 미복용이면 Web Push 알림.
+      알림 정책은 "한 번만" — 사용자가 놓치면 그 슬롯은 끝, 다음 슬롯에서 새로 시작.
+    inputSchema:
+      type: object
+      required: [slug, display_name, schedule_times]
+      properties:
+        slug:
+          type: string
+          description: "영문 소문자 snake_case 고유 식별자. 예: 'vitamin_d', 'omega3', 'magnesium_glycinate', 'aspirin_low_dose'."
+        display_name:
+          type: string
+          description: "사용자에게 보일 이름. 예: '비타민D 3000IU', '오메가3'. 한국어 가능."
+        times_per_day:
+          type: integer
+          description: "하루 복용 횟수. 생략하면 schedule_times 길이로 자동. 명시 시 schedule_times 길이와 일치 필수."
+        schedule_times:
+          type: array
+          description: "복용 시각 배열. 각 원소 'HH:MM' 24시간 형식. 예: ['09:00'] 또는 ['09:00','13:00','21:00']."
+        every_n_days:
+          type: integer
+          description: "복용 간격 (일). 매일=1 (기본), 격일=2, 주 1회=7. start_date 기준 계산."
+        with_meal:
+          type: boolean
+          description: "식사와 함께 복용 권장이면 true. 알림 body 에 '식사 후' 표시."
+        start_date:
+          type: string
+          description: "복용 시작일 YYYY-MM-DD. 이 날짜 전엔 알림 안 옴."
+        end_date:
+          type: string
+          description: "복용 종료일 YYYY-MM-DD. 이 날짜 후엔 알림 안 옴. 처방약 일시 복용에 유용."
+        dose_note:
+          type: string
+          description: "용량/형태 메모. 예: '1캡슐', '반 알', '5ml'. 알림 body 에 함께 표시."
+        notes:
+          type: string
+          description: "기타 메모. 알림 body 에 함께 표시."
+
+  - name: list_supplements
+    description: |
+      현재 등록된 모든 영양제·약 정기 복용 정의 목록 (활성만 — end_date 지난 건 제외).
+      "지금 뭐 챙겨먹고 있어?" / "오늘 남은 복용은?" 류 질문에 답하기 전 호출.
+      반환값에 timezone/today 도 포함 — 호출 AI 가 추정 금지.
+    inputSchema:
+      type: object
+      properties: {}
+
+  - name: delete_supplement
+    description: |
+      영양제·약 정의 영구 삭제. 과거 복용 기록 (intake) 은 보존 — 순응도 통계 유지.
+      일시 중단이면 set_supplement 로 end_date 추가가 더 안전.
+    inputSchema:
+      type: object
+      required: [slug]
+      properties:
+        slug:
+          type: string
+          description: "삭제할 정의의 slug."
+
+  - name: record_supplement_intake
+    description: |
+      영양제·약 실제 복용 한 건 기록. 사용자가 "비타민D 방금 먹었어" 보고하면 호출.
+      slot 인자가 없으면 현재 시간 (사용자 timezone) 에 가장 가까운 정의된 슬롯에 자동 매칭.
+      여러 슬롯이 있고 어느 슬롯인지 헷갈리면 호출 AI 가 사용자에게 물어보고 slot 명시.
+      같은 (date, slug, slot) 에 다시 부르면 덮어씀 (idempotent) — 중복 카운트 없음.
+      이 기록이 들어오면 그 슬롯의 알림은 자동으로 안 나감.
+    inputSchema:
+      type: object
+      required: [slug]
+      properties:
+        slug:
+          type: string
+          description: "복용한 영양제의 slug. supplement:{slug} 정의가 미리 있어야 함."
+        date:
+          type: string
+          description: "복용 날짜 YYYY-MM-DD. 생략하면 사용자 timezone 기준 오늘."
+        slot:
+          type: string
+          description: "복용한 슬롯 'HH:MM'. 정의된 schedule_times 중 하나여야 함. 생략 시 현재 시간에 가장 가까운 슬롯."
+        taken_at:
+          type: string
+          description: "실제 복용 시각 ISO timestamp. 생략하면 현재."
+        note:
+          type: string
+
+  # ─────────────────────────────────────────────────────────────────────
   # 현재 상태 종합 스냅샷 ⭐
   # ─────────────────────────────────────────────────────────────────────
   - name: get_state
@@ -297,8 +390,30 @@ user_settings:
     default: "2026-06 ~ 2026-07"
     description: 다음 혈액검사 예정 시기. 사용자가 채혈하고 record_blood_panel 호출 후 다음 일정으로 갱신.
 
+  - key: timezone
+    type: string
+    default: "Asia/Seoul"
+    description: |
+      알림 시각 판단·오늘 날짜 계산용 IANA timezone. 영양제 알림이 9:00 슬롯이면
+      이 timezone 기준의 9:00 에 워커가 알림 발송. 해외 출장 시 변경.
+
+  - key: supplement_window_minutes
+    type: integer
+    default: 30
+    description: |
+      영양제 알림 윈도우 (슬롯 시간 + N분). 그 안에 복용 기록 없으면 알림 1회 발송.
+      윈도우 놓치면 그 슬롯은 영원히 알림 안 옴 — 다음 슬롯에서 새로 시작. 기본 30분.
+
 # ─────────────────────────────────────────────────────────────────────────
-# 위젯 (notifications 없음 — 빈 컨텍스트 추천 차단)
+# 워커가 5분마다 호출 — 영양제·약 미복용 슬롯 Web Push 알림
+# (AI 가 자기 마음대로 추천하는 알림은 의도적으로 만들지 않음 — 빈 컨텍스트 추천 차단)
+# ─────────────────────────────────────────────────────────────────────────
+notifications:
+  function: check_notifications
+  cadence: 300
+
+# ─────────────────────────────────────────────────────────────────────────
+# /board 위젯
 # ─────────────────────────────────────────────────────────────────────────
 visualization:
   function: render_dashboard

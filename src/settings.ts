@@ -14,6 +14,8 @@ const DEFAULTS: Settings = {
   pr_deadlift_kg: 0,
   four_goals: ['futsal_soccer', 'taekwondo', 'thigh_power', 'upper_body_maintenance'],
   next_blood_panel_target: '2026-06 ~ 2026-07',
+  timezone: 'Asia/Seoul',
+  supplement_window_minutes: 30,
 };
 
 // 플랫폼이 manifest user_settings 와 사용자 수정값을 __settings 키로 합쳐 둠.

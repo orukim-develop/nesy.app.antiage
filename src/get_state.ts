@@ -1,13 +1,18 @@
 // get_state — 사용자 현재 상태 종합 스냅샷. SPEC §3.7.
 // 호출 AI 가 운동·식단·체중 추천 전에 반드시 부르도록 description 에 박혀 있음.
 
-import type { RunCtx, Session, WeightEntry, InBodyEntry, BloodPanel, Meal } from './types.ts';
+import type {
+  RunCtx, Session, WeightEntry, InBodyEntry, BloodPanel, Meal,
+  SupplementSchedule, SupplementIntake,
+} from './types.ts';
 import { getSettings } from './settings.ts';
 import {
   loadAllSessions, loadAllWeights, loadAllInBody, loadAllBlood, loadAllMeals,
   loadInjuryHistory, getActiveInjury, findLastSession,
+  loadAllSupplements, loadAllIntakes,
 } from './store.ts';
 import { daysBetween, todayIso } from './utils.ts';
+import { timeToKey, timeToMinutes, nowInTz, daysSinceIso } from './supplements/common.ts';
 
 const TRACKED_EXERCISES = ['squat', 'deadlift', 'bench_press', 'shoulder_press'];
 
@@ -15,7 +20,7 @@ export async function getState(ctx: RunCtx) {
   const today = todayIso();
   const settings = await getSettings(ctx);
 
-  const [sessions, weights, inbodyAll, bloodAll, meals, injuryHistory, activeInjury] =
+  const [sessions, weights, inbodyAll, bloodAll, meals, injuryHistory, activeInjury, supps, allIntakes] =
     await Promise.all([
       loadAllSessions(ctx),
       loadAllWeights(ctx),
@@ -24,6 +29,8 @@ export async function getState(ctx: RunCtx) {
       loadAllMeals(ctx),
       loadInjuryHistory(ctx),
       getActiveInjury(ctx),
+      loadAllSupplements(ctx),
+      loadAllIntakes(ctx),
     ]);
 
   // ───── weight 섹션 ─────
@@ -142,6 +149,9 @@ export async function getState(ctx: RunCtx) {
     else status7day = 'maintenance';
   }
 
+  // ───── 영양제 섹션 ─────
+  const supplementSection = buildSupplementSection(supps, allIntakes, settings.timezone, today);
+
   return {
     today,
     user_constants: {
@@ -181,6 +191,7 @@ export async function getState(ctx: RunCtx) {
       maintenance_estimate: maintenanceEstimate,
       status_7day: status7day,
     },
+    supplements: supplementSection,
     meta: {
       ai_must_call_get_state_before_recommendation: true,
       ai_must_confirm_dates_before_recording: true,
@@ -274,6 +285,123 @@ function subtractDays(iso: string, days: number): string {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function buildSupplementSection(
+  supps: SupplementSchedule[],
+  intakes: SupplementIntake[],
+  tz: string,
+  todayUtc: string,
+) {
+  // 오늘 (사용자 timezone 기준)
+  const { date: todayLocal, time: nowHHMM } = nowInTz(tz);
+  const nowMin = timeToMinutes(nowHHMM);
+
+  // 활성 supps 만 (end_date / start_date 필터)
+  const active = supps.filter((s) => {
+    if (s.start_date && todayLocal < s.start_date) return false;
+    if (s.end_date && todayLocal > s.end_date) return false;
+    return true;
+  });
+
+  // 오늘 복용 기록 lookup
+  const todayIntakeSet = new Set<string>();
+  for (const it of intakes) {
+    if (it.date === todayLocal) todayIntakeSet.add(`${it.slug}:${timeToKey(it.slot)}`);
+  }
+
+  // 오늘 due 인 supps 각각: 슬롯별 상태
+  const todaySchedule: any[] = [];
+  let dueSlotCount = 0;
+  let takenSlotCount = 0;
+  for (const s of active) {
+    const due = isDue(s, todayLocal);
+    if (!due) continue;
+    const slots = s.schedule_times.map((slot) => {
+      const slotMin = timeToMinutes(slot);
+      const taken = todayIntakeSet.has(`${s.slug}:${timeToKey(slot)}`);
+      const status: 'taken' | 'pending' | 'overdue' | 'upcoming' =
+        taken ? 'taken' :
+        nowMin < slotMin - 5 ? 'upcoming' :
+        nowMin > slotMin + 60 ? 'overdue' :
+        'pending';
+      dueSlotCount += 1;
+      if (taken) takenSlotCount += 1;
+      return { slot, status };
+    });
+    todaySchedule.push({
+      slug: s.slug,
+      display_name: s.display_name,
+      with_meal: s.with_meal ?? null,
+      dose_note: s.dose_note ?? null,
+      slots,
+    });
+  }
+
+  // 최근 7일 순응도 — 매일 due 인 슬롯 수 vs 실제 복용 슬롯 수.
+  const adherence = computeAdherence(active, intakes, todayLocal, 7);
+
+  return {
+    today_local: todayLocal,
+    timezone: tz,
+    active_count: active.length,
+    today_due_slots: dueSlotCount,
+    today_taken_slots: takenSlotCount,
+    today_schedule: todaySchedule,
+    adherence_7day_pct: adherence,
+    note:
+      'today_schedule[].slots[].status: taken|pending|overdue|upcoming. ' +
+      'overdue = 60분 이상 지났는데 안 먹음. AI 는 사용자에게 짧게 리마인드만 권고.',
+  };
+}
+
+function isDue(s: SupplementSchedule, today: string): boolean {
+  if (s.start_date && today < s.start_date) return false;
+  if (s.end_date && today > s.end_date) return false;
+  const every = s.every_n_days ?? 1;
+  if (every === 1) return true;
+  const start = s.start_date || (s.created_at || today).slice(0, 10);
+  const diff = daysSinceIso(start, today);
+  if (diff < 0) return false;
+  return diff % every === 0;
+}
+
+function computeAdherence(
+  supps: SupplementSchedule[],
+  intakes: SupplementIntake[],
+  today: string,
+  windowDays: number,
+): number | null {
+  if (supps.length === 0) return null;
+  let due = 0;
+  let taken = 0;
+  // 윈도우의 각 날짜
+  for (let i = 0; i < windowDays; i++) {
+    const d = shiftDate(today, -i);
+    const intakeSet = new Set<string>();
+    for (const it of intakes) {
+      if (it.date === d) intakeSet.add(`${it.slug}:${timeToKey(it.slot)}`);
+    }
+    for (const s of supps) {
+      if (!isDue(s, d)) continue;
+      for (const slot of s.schedule_times) {
+        due += 1;
+        if (intakeSet.has(`${s.slug}:${timeToKey(slot)}`)) taken += 1;
+      }
+    }
+  }
+  if (due === 0) return null;
+  return Math.round((taken / due) * 100);
+}
+
+function shiftDate(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
 }
 
 function computeFlagsFromBlood(b: BloodPanel): string[] {

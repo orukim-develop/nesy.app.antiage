@@ -9,6 +9,7 @@
 
 ## 노출 함수
 
+### 기록·조회·계산
 | 함수 | 역할 |
 | --- | --- |
 | `record_session` | 운동 세션 한 건 기록 + 15% 증량 / 통증 / 충돌 부위 warnings 자동 |
@@ -20,9 +21,19 @@
 | `get_state` | 모든 영역 현재 상태 종합 스냅샷 ⭐ AI 가 추천 전 필호출 |
 | `compute_next_load` | 다음 세션 권장 무게 — 검증된 공식만 사용 ⭐ |
 
-자동 노출: `get_user_settings` / `update_user_settings` (목표 체중·봉 무게·activity_factor·PR·4대 목표 등)
+### 영양제 / 약 정기 복용 + 푸시 알림
+| 함수 | 역할 |
+| --- | --- |
+| `set_supplement` | 영양제·약 스케줄 정의 (upsert). slug + display_name + schedule_times (HH:MM 배열) + every_n_days + with_meal + start/end_date |
+| `list_supplements` | 활성 정의 목록 |
+| `delete_supplement` | 정의 영구 삭제 (intake 기록은 보존) |
+| `record_supplement_intake` | "방금 먹었어" 기록. 슬롯 자동 매칭 |
 
-위젯: `render_dashboard` — `/board` 에서 5분마다 새 SVG 카드 렌더 (체중/운동/식단/혈액검사 요약)
+자동 노출: `get_user_settings` / `update_user_settings` (목표 체중·봉 무게·activity_factor·PR·4대 목표·timezone·supplement_window_minutes 등)
+
+### 플랫폼 내부 호출 (AI 비노출)
+- 위젯 `render_dashboard` — `/board` 에서 5분마다 새 SVG 카드 렌더 (체중/운동/식단/혈액검사 요약)
+- 알림 `check_notifications` — 5분마다 워커가 호출. 영양제 슬롯 시간 ±30분 안의 미복용 슬롯에 Web Push 알림. "한 번만" 정책 — 윈도우 놓치면 다음 슬롯에서 새로 시작.
 
 ## 호출 마법언어
 
