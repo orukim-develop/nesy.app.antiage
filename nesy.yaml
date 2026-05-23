@@ -1,0 +1,306 @@
+# 심장이 득근득근해지는 마법 (nesy.app.getmuscle)
+#
+# 호출 AI (Claude / ChatGPT / Gemini) 의 외장 기억장치.
+# 추천하지 않고, 기록 / 돌려줌 / 검증된 공식으로 계산만 한다.
+# 자세한 설계 근거는 SPEC.md.
+
+tools:
+  # ─────────────────────────────────────────────────────────────────────
+  # 운동 세션 기록
+  # ─────────────────────────────────────────────────────────────────────
+  - name: record_session
+    description: |
+      운동 세션 한 건을 기록합니다. "오늘 스쿼트 60kg 5회 3세트" 같은 보고를 받으면 호출.
+      스미스머신이면 user_settings.bar_weight_kg_smith 가 포함된 총 중량(kg)을 weight_kg 에 넣을 것.
+      반환값의 warnings 에 ① 같은 운동 직전 대비 15% 이상 증량 ② 통증 발생 ③ 활성 부상 부위와 충돌
+      세 가지 신호가 들어옴 — 호출 AI 가 그대로 사용자에게 전달.
+      주의: 사용자가 "오늘", "어제" 같은 상대 시간을 말하면 절대 추측하지 말고
+      플랫폼 시간 API 또는 사용자 명시 확인을 거쳐 date 파라미터를 채울 것. 날짜 혼동은 가장 자주 일어나는 실수.
+    inputSchema:
+      type: object
+      required: [date, exercises]
+      properties:
+        date:
+          type: string
+          description: "ISO 날짜 (YYYY-MM-DD). 사용자가 '오늘' 이라 하면 호출 AI 가 시간 API로 확인 후 채울 것. 추측 금지."
+        exercises:
+          type: array
+          description: |
+            이 세션에서 한 운동 리스트. 각 원소는 객체이며 다음 키를 가진다.
+            { name: string (운동명. 예 'squat'·'bench_press'·'deadlift'·'shoulder_press'·'running_km'. snake_case 권장),
+              equipment?: 'smith'|'barbell'|'dumbbell'|'machine'|'bodyweight'|'cardio' (스미스/프리웨이트 직접 비교 차단을 위해 가능하면 항상 채울 것),
+              sets: 배열, 각 원소는 { weight_kg?: number (봉 포함 총 중량 kg. 스미스머신은 user_settings.bar_weight_kg_smith 합산값), reps?: integer, rir?: integer (Reps In Reserve 0-5. 모르면 null 또는 생략), duration_min?: number (유산소용), distance_km?: number (유산소용) } }
+            name 과 sets 는 필수.
+        pain:
+          type: object
+          description: |
+            통증 발생 시. 없으면 생략. 구조:
+            { site: string ('lower_back'·'knee'·'shoulder'·'elbow'·'wrist' 등),
+              severity: integer (1-10),
+              note?: string }
+        condition:
+          type: integer
+          description: "사용자 주관 컨디션 1-10. 9-10 best, 1-3 worst. 호출 AI 가 묻고 채움."
+        note:
+          type: string
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 체중 기록
+  # ─────────────────────────────────────────────────────────────────────
+  - name: record_weight
+    description: |
+      체중 한 건 기록. measurement_context (fasted / postmeal / postworkout / unknown) 는 반드시 명시 —
+      사용자가 안 말하면 호출 AI 가 물어볼 것. unknown 저장은 비추.
+      반환값 in_range 는 user_settings.target_weight_rule (기본 always_in_range = 측정 시점 무관 항상)
+      기준으로 판정. 호출 AI 가 "공복 기준 OK" 식으로 자체 해석 금지.
+      날짜 처리는 record_session 과 동일 규칙.
+    inputSchema:
+      type: object
+      required: [date, weight_kg, measurement_context]
+      properties:
+        date: { type: string, description: "ISO 날짜 (YYYY-MM-DD)." }
+        time: { type: string, description: "'HH:MM' 형식. 선택." }
+        weight_kg: { type: number }
+        measurement_context:
+          type: string
+          description: "'fasted' (공복) | 'postmeal' (식후) | 'postworkout' (운동 직후) | 'unknown'."
+        note: { type: string }
+
+  # ─────────────────────────────────────────────────────────────────────
+  # InBody 결과
+  # ─────────────────────────────────────────────────────────────────────
+  - name: record_inbody
+    description: |
+      InBody (체성분 분석) 결과 한 건 기록. 마도서가 가장 신뢰하는 변화 지표.
+      반환값 delta 에 직전 InBody 대비 변화량 + interpretation_hint
+      ('recomp_progress' / 'muscle_loss' / 'fat_gain' / 'stable') 가 들어옴 —
+      호출 AI 가 이걸 보고 사용자에게 설명. 마도서는 단정 안 함.
+      날짜 처리는 record_session 과 동일.
+    inputSchema:
+      type: object
+      required: [date, weight_kg, skeletal_muscle_kg, body_fat_kg, body_fat_pct, bmr_kcal]
+      properties:
+        date: { type: string }
+        weight_kg: { type: number }
+        skeletal_muscle_kg: { type: number, description: "골격근량 kg." }
+        body_fat_kg: { type: number, description: "체지방량 kg." }
+        body_fat_pct: { type: number, description: "체지방률 %." }
+        bmr_kcal: { type: integer, description: "기초대사량 kcal." }
+        visceral_fat_level: { type: integer, description: "내장지방 레벨. 선택." }
+        bmi: { type: number, description: "BMI. 선택." }
+        note: { type: string }
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 혈액검사
+  # ─────────────────────────────────────────────────────────────────────
+  - name: record_blood_panel
+    description: |
+      혈액검사 결과 한 건 기록. 한국 일반 임상 기준으로 정상 범위 플래그를 반환값에 채움
+      (ldl_high / hdl_low / uric_acid_high / vitamin_d_deficient 등).
+      호출 AI 는 플래그만 보고 진단/처방 흉내 금지. 다음 검사 예정일은 user_settings 의
+      next_blood_panel_target 참고 (기본 마지막 검사 + 90일).
+      날짜 처리는 record_session 과 동일.
+    inputSchema:
+      type: object
+      required: [date]
+      properties:
+        date: { type: string }
+        ldl_mg_dl: { type: number }
+        hdl_mg_dl: { type: number }
+        total_cholesterol_mg_dl: { type: number }
+        triglycerides_mg_dl: { type: number }
+        uric_acid_mg_dl: { type: number }
+        vitamin_d_ng_ml: { type: number }
+        fasting_glucose_mg_dl: { type: number }
+        hba1c_pct: { type: number }
+        note: { type: string }
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 식단 기록 (컨펌 후)
+  # ─────────────────────────────────────────────────────────────────────
+  - name: record_meal
+    description: |
+      식단 한 끼 기록. 사용자가 식사 사진을 보내면 호출 AI 가 사진을 직접 분석한 뒤,
+      "이거 X 로 보이는데 맞아? 양은?" 사용자에게 컨펌받은 결과만 이 함수로 저장한다.
+      컨펌 없이 추정으로 채우지 말 것. source='photo_confirmed' 는 컨펌이 끝난 경우에만.
+      반환값에 그 날의 누적 kcal/단백질 + 마지막 InBody 의 BMR 기반 유지 추정치 +
+      현재 상태 ('deficit' / 'maintenance' / 'surplus') 가 들어옴.
+      날짜 처리는 record_session 과 동일.
+    inputSchema:
+      type: object
+      required: [date, slot, items, source]
+      properties:
+        date: { type: string }
+        slot:
+          type: string
+          description: "'breakfast' | 'lunch' | 'dinner' | 'snack'"
+        items:
+          type: array
+          description: |
+            음식 리스트. 각 원소는 객체:
+            { name: string (예 'sabamiso_ni'·'americano_tall'·'apple'. snake_case 권장),
+              estimated_kcal?: integer,
+              protein_g?: number,
+              portion_note?: string (예 '반마리'·'1잔') }
+            name 은 필수.
+        source:
+          type: string
+          description: "'user_text' (사용자 직접 발화) | 'photo_confirmed' (호출 AI 사진 분석 → 사용자 컨펌) | 'ai_recommended_consumed' (record_recipe 로 저장된 추천을 실제로 먹음)"
+        recipe_ref:
+          type: string
+          description: "source='ai_recommended_consumed' 일 때, 이전에 record_recipe 가 돌려준 recipe_id."
+        total_kcal_estimated: { type: integer }
+        note: { type: string }
+
+  # ─────────────────────────────────────────────────────────────────────
+  # AI 추천 레시피 기록
+  # ─────────────────────────────────────────────────────────────────────
+  - name: record_recipe
+    description: |
+      호출 AI 가 사용자에게 추천한 레시피를 그 시점에 자동 저장. 실제 섭취 여부는 별개
+      (먹었으면 record_meal 의 recipe_ref 로 연결).
+      source_url 은 호출 AI 가 검증한 유튜브/신뢰 레시피 사이트 URL — 좆문가 블로그 거름.
+      날짜 처리는 record_session 과 동일.
+    inputSchema:
+      type: object
+      required: [date, name, source_url]
+      properties:
+        date: { type: string, description: "추천한 날짜." }
+        name: { type: string }
+        cuisine: { type: string, description: "'japanese' | 'italian' | 'korean' 등." }
+        source_url:
+          type: string
+          description: "유튜브 또는 신뢰 가능한 레시피 사이트 URL. 호출 AI 는 검증된 URL만 채울 것."
+        ingredients:
+          type: array
+          description: "재료명 문자열 배열. 예: ['고등어','된장','대파','생강']."
+        primary_protein_g: { type: number }
+        estimated_kcal: { type: integer }
+        ldl_friendly: { type: boolean, description: "포화지방 낮고 식이섬유 높으면 true." }
+        rationale:
+          type: string
+          description: "왜 이걸 추천했는지 한 줄. 예: 'LDL 관리 + 단백질 35g 확보 + 정통 일식'."
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 현재 상태 종합 스냅샷 ⭐
+  # ─────────────────────────────────────────────────────────────────────
+  - name: get_state
+    description: |
+      사용자의 현재 운동·식단·건강 상태 스냅샷을 돌려준다.
+      운동·식단·체중 관련 추천을 하기 전에 반드시 먼저 호출할 것.
+      빈 추론으로 메모리를 채우지 말고, 이 함수로 사실을 먼저 확보한다.
+      반환값에는 마지막 세션 무게, 활성 부상, 목표 체중 규칙(식후 포함 여부),
+      최근 혈액검사 플래그(LDL/요산/비타민D), 4대 운동 목표가 포함된다.
+      사용자 메모리 시스템과 별개로 유지되는 정직한 외장 기억이다.
+    inputSchema:
+      type: object
+      properties: {}
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 다음 세션 무게 계산 ⭐
+  # ─────────────────────────────────────────────────────────────────────
+  - name: compute_next_load
+    description: |
+      해당 운동의 다음 세션 권장 무게를 검증된 공식으로 계산.
+      Plotkin 2022 / Refalo 2024 / 주당 2-5% 증량 가이드라인 / RIR off-target 1당 약 4% 보정 /
+      부상 후 복귀 초기 RPE 4-6 — 이 다섯 출처만 사용. 호출 AI 는 반환된 weight/phase/rationale 을
+      사용자에게 그대로 전달하고, 자체적으로 무게를 더하거나 빼지 말 것.
+      phase 자동 판단: 부상 회복 30일 이내 → return_from_injury,
+      RIR ≤ 0 또는 condition ≤ 4 → deload, 3주 이상 같은 무게 → plateau_break, 그 외 → normal_progression.
+      4대 운동 목표 부합 여부 검증은 호출 AI 책임.
+    inputSchema:
+      type: object
+      required: [exercise_name]
+      properties:
+        exercise_name:
+          type: string
+          description: "마지막 세션 기록과 매칭할 운동명 (snake_case)."
+        target_reps:
+          type: integer
+          description: "이번 세션에서 노릴 반복수. 기본 5."
+        target_rir:
+          type: integer
+          description: "이번 세션 목표 RIR. 기본 2."
+        override_phase:
+          type: string
+          description: "자동 판단 무시. 'return_from_injury' | 'deload' | 'normal_progression' | 'plateau_break'."
+
+# ─────────────────────────────────────────────────────────────────────────
+# 사용자 설정 (호출 AI 에게 노출되는 상수 — 멋대로 해석 차단용)
+# ─────────────────────────────────────────────────────────────────────────
+user_settings:
+  - key: target_weight_min
+    type: number
+    default: 73
+    description: 목표 체중 하한 kg.
+
+  - key: target_weight_max
+    type: number
+    default: 75
+    description: 목표 체중 상한 kg.
+
+  - key: target_weight_rule
+    type: enum
+    options: [always_in_range, fasted_only, daily_average]
+    default: always_in_range
+    description: |
+      목표 체중 측정 규칙. always_in_range = 식후 포함 측정 시점 무관 항상 범위 안.
+      이 값을 호출 AI 가 멋대로 해석하지 않도록 enum 으로 박는다.
+
+  - key: bar_weight_kg_smith
+    type: number
+    default: 20
+    description: 스미스머신 봉 무게. 잠정값 — 다이소 행잉저울로 측정 필요.
+
+  - key: bar_weight_verified
+    type: boolean
+    default: false
+    description: 봉 무게 검증 여부. 검증 전엔 compute_next_load 의 warnings 에 표시.
+
+  - key: bar_weight_kg_barbell
+    type: number
+    default: 20
+    description: 프리웨이트 바벨 봉 무게.
+
+  - key: activity_factor
+    type: number
+    default: 1.25
+    description: BMR 곱셈 활동계수. 1.2(좌식) ~ 1.55(중간활동). 마운자로 후 대사적응 감안 1.2-1.3 권장.
+
+  - key: pr_squat_kg
+    type: number
+    default: 90
+    description: 부상 전 스쿼트 PR (프리웨이트 기준).
+
+  - key: pr_bench_press_kg
+    type: number
+    default: 60
+    description: 부상 전 벤치프레스 PR (봉+20+20 환산).
+
+  - key: pr_shoulder_press_kg
+    type: number
+    default: 30
+    description: 부상 전 숄더프레스 PR.
+
+  - key: pr_deadlift_kg
+    type: number
+    default: 0
+    description: 부상 전 데드리프트 PR. 측정 안 됐으면 0.
+
+  - key: four_goals
+    type: list_string
+    default: [futsal_soccer, taekwondo, thigh_power, upper_body_maintenance]
+    description: 4대 운동 목표. 변경 시 마도서 추천 검증 기준이 바뀜.
+
+  - key: next_blood_panel_target
+    type: string
+    default: "2026-06 ~ 2026-07"
+    description: 다음 혈액검사 예정 시기. 사용자가 채혈하고 record_blood_panel 호출 후 다음 일정으로 갱신.
+
+# ─────────────────────────────────────────────────────────────────────────
+# 위젯 (notifications 없음 — 빈 컨텍스트 추천 차단)
+# ─────────────────────────────────────────────────────────────────────────
+visualization:
+  function: render_dashboard
+  cadence: 300
+  height: 480

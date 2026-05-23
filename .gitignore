@@ -1,0 +1,8 @@
+# 로컬 타입 체크용 의존성 (npx tsc 시 자동 생성). 커밋 금지.
+node_modules/
+package-lock.json
+
+# 로컬 에디터/OS 메타
+.DS_Store
+Thumbs.db
+*.log
