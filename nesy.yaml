@@ -16,39 +16,59 @@ tools:
 
   - name: define_routine_exercise
     description: |
-      progressive overload 대상 루틴 운동을 등록한다 (squat, bench_press, deadlift, overhead_press, lat_pulldown 등).
-      같은 slug 가 있으면 덮어쓴다.
-      category 는 next_weight 의 기본 증량 단위에 영향 — compound 2.5kg, isolation 1.25kg.
-      compound 의 경우 `fact:exercise:min_plate_increment_kg` (define_user_fact 로 `{ v: ... }`) 가 등록되어 있으면 그 값이 우선.
-      AI 는 사용자와 합의된 운동만 등록 (임의 등록 금지).
+      progressive overload 추적 대상 운동을 등록한다.
+      progression 으로 어떤 축으로 진척을 추적할지 선택:
+        weight — 무게 증가가 진척 (스쿼트, 벤치프레스, 머신, isolation 등)
+        time — 시간 단축이 진척 (4km 기어가기 10분→3분, 5km 러닝 30분→25분 등). 낮을수록 좋음
+        distance — 시간 고정·거리 증가가 진척 (1시간 RowErg 12500m→13000m, 30분 자전거 등)
+        reps — 횟수 증가가 진척 (1세트 푸시업 max reps, 풀업 max 등 자체중)
+        hold — 유지 시간 증가가 진척 (플랭크, L-sit, 데드행 등)
+      표준 인체 가정 금지 — 다리/팔이 없거나 의수·의족 사용자도 본인이 할 수 있는 형태(예 "기어가기", "한팔 푸시업")를 progression 에 맞게 등록 가능.
+      같은 slug 는 덮어쓴다. AI 는 사용자와 합의된 운동만 등록 — 임의 등록 금지.
+
+      category 는 progression=weight 일 때만 의미: compound=다관절 → 기본 증분 2.5kg, isolation=단관절 → 1.25kg.
+      compound 의 경우 fact:exercise:min_plate_increment_kg 가 등록되어 있으면 그 값이 우선.
+      비무게 progression 의 기본 증분: time 30(초 가정) / distance 100(m 가정) / reps 1 / hold 5(초 가정). default_increment 로 덮어쓸 수 있음.
     inputSchema:
       type: object
       properties:
         slug:
           type: string
-          description: snake_case 식별자. 예 squat / bench_press / lat_pulldown.
+          description: snake_case 식별자. 예 squat / bench_press / crawling_4km / rowerg_1hr / push_ups_max / plank.
         display_name:
           type: string
-          description: 사용자에게 보일 이름 (한글 가능). 예 "백 스쿼트".
-        category:
+          description: 사용자에게 보일 이름 (한글 가능). 예 "백 스쿼트", "4km 기어가기", "1시간 RowErg".
+        progression:
           type: string
-          description: "compound 또는 isolation. compound=다관절, isolation=단관절."
+          description: "weight / time / distance / reps / hold 중 하나."
         unit:
           type: string
-          description: "kg 또는 lb."
-        default_rir_target:
-          type: integer
-          description: "다음 세트의 RIR 목표 (0~4). 보통 1~2. 생략 시 2."
-        weekly_cap_kg:
+          description: "값의 단위. weight: kg/lb. time: seconds/minutes. distance: meters/km. reps: reps. hold: seconds."
+        category:
+          type: string
+          description: "선택. progression=weight 일 때만 의미 — compound 또는 isolation. 기본 증분 단위에 영향."
+        default_rpe_target:
           type: number
-          description: "선택. 주당 최대 증량(kg). 생략하면 무제한. 과도한 증량 방지용."
-      required: [slug, display_name, category, unit]
+          description: "선택. 다음 세트 '힘들었음 점수' 목표 (1~10, 높을수록 힘듦). 보통 7~9. 생략 시 8. AI 는 사용자에게 RPE 용어 말고 '힘들었음 점수' 로 묻기."
+        default_increment:
+          type: number
+          description: "선택. 다음 추천 시 증감 단위. 생략 시 progression+category 기준 기본값 적용."
+        weekly_cap:
+          type: number
+          description: "선택. 주당 최대 진척 누계 (routine.unit 기준). 과도한 진척 방지용."
+      required: [slug, display_name, progression, unit]
 
   - name: log_routine_session
     description: |
       루틴 운동의 한 세션(여러 세트 묶음)을 기록한다.
-      각 세트는 reps / weight / rir. 여기 기록된 RIR 이 next_weight 계산의 입력.
-      반환: 저장 결과 + 등록된 routine 의 다음 추천 무게(계산 가능할 때). 별도로 next_weight 다시 부를 필요 없음.
+      각 세트 구조는 routine.progression 에 따라 다름:
+        weight: { reps, weight, rpe }
+        time: { time, rpe }
+        distance: { distance, rpe }
+        reps: { reps, rpe }
+        hold: { hold, rpe }
+      rpe 는 1~10 '힘들었음 점수' (높을수록 힘듦). 0 도 허용(전혀 힘들지 않음).
+      반환: 저장 결과 + 다음 세션 추천값(next_target). 별도로 next_target 다시 부를 필요 없음.
     inputSchema:
       type: object
       properties:
@@ -57,7 +77,7 @@ tools:
           description: 등록된 routine 의 slug.
         sets:
           type: array
-          description: "[{reps, weight, rir}] 배열. 각 세트의 실제 reps/weight(routine unit 따름)/rir(0~4)."
+          description: "세트 배열. progression 에 맞는 필드를 채워야 한다 — weight: reps/weight/rpe / time: time/rpe / distance: distance/rpe / reps: reps/rpe / hold: hold/rpe."
         performed_at:
           type: string
           description: "ISO 8601 시각. 생략하면 호출 시점."
@@ -68,15 +88,16 @@ tools:
 
   - name: log_activity
     description: |
-      루틴 외 활동을 기록한다 (축구, 산책, 자전거, 등산, 수영 등).
-      progressive overload 대상 아니라 자유 텍스트 name + 강도 + 시간만 받음.
+      progressive overload 대상이 아닌 자유 활동을 기록한다 (산책, 등산, 풋살, 가벼운 자전거 등).
+      성장 추적이 아니라 활동량 로깅용 — name + intensity + duration_minutes 만 받음.
+      만약 사용자가 "이거 진척 추적해줘" 라고 하면 log_activity 대신 define_routine_exercise (progression 적절히 선택) 으로 등록.
       kcal 추정은 마도서가 안 함 — AI 가 강도×시간×체중으로 보조 추정.
     inputSchema:
       type: object
       properties:
         name:
           type: string
-          description: "활동명 자유 텍스트. 예 '축구', '한강 자전거'."
+          description: "활동명 자유 텍스트. 예 '한강 자전거', '동네 산책'."
         intensity:
           type: string
           description: "light / moderate / vigorous 중 하나. AI 가 사용자 발화로 보조 판단."
@@ -222,7 +243,7 @@ tools:
       마도서가 사전에 정의할 수 없는 정보(헬스장 장비/바 무게, 의수·의족, 알레르기, 복용약, 식단 제약, 직업·수면 등) 를 AI 가 분류해서 적재한다.
 
       축:
-        exercise — 운동 환경/장비/제약. 예: 최소 plate 증분 (slug `min_plate_increment_kg`, value `{ v: 2.5 }` — next_weight 가 이 값을 increment 로 자동 사용), 사용 가능한 기구 목록, 왼팔 의족 등 신체적 제한
+        exercise — 운동 환경/장비/제약. 예: 최소 plate 증분 (slug `min_plate_increment_kg`, value `{ v: 2.5 }` — next_target 이 이 값을 increment 로 자동 사용), 사용 가능한 기구 목록, 왼팔 의족 등 신체적 제한
         health_metric — 알레르기, 복용 약물, 만성질환, 가족력
         diet_reminder — 식단 제약(비건/저탄수/케토), 카페인·알코올 한도, 단식 윈도우
         baseline — 변하지 않거나 천천히 변하는 본인 정보. 직업, 평균 수면 시간, 흡연·음주 상태, 거주 도시
@@ -233,7 +254,7 @@ tools:
         3. 사용자 합의를 받은 뒤에만 호출
         4. 축이 모호하면 "A 또는 B, 어느 쪽?" 사용자에게 직접 질문 — AI 단독 결정 금지
 
-      value 는 항상 object 로 저장. 스칼라(숫자/문자열/불린)는 `{ v: 값 }` 으로 감싼다 — next_weight 등 마도서 내부 로직이 v 키를 기대.
+      value 는 항상 object 로 저장. 스칼라(숫자/문자열/불린)는 `{ v: 값 }` 으로 감싼다 — next_target 등 마도서 내부 로직이 v 키를 기대.
       목록은 `{ items: [...] }`, 구조체는 자유 키.
       같은 (axis, slug) 면 덮어쓴다.
     inputSchema:
@@ -254,9 +275,54 @@ tools:
           description: "임의 구조. 스칼라는 { v: ... } 로 감싸기. 예 { v: 2.5 }, { items: ['땅콩','갑각류'] }, { side: 'left', since: '2020' }."
       required: [axis, slug, label, value]
 
+  - name: define_split_plan
+    description: |
+      분할 계획을 등록한다 — 운동을 묶음(bucket)으로 묶고, 언제(요일/순환/자유) 할지 매핑.
+      같은 slug 면 덮어쓴다. is_active=true 면 다른 plan 들은 자동 비활성.
+      여러 plan 저장 가능(시각화·비교용) — 활성은 1개만.
+
+      buckets — 운동 묶음 배열. 각 [{ key, label, routine_slugs }].
+        key: 묶음 식별자(예 "A","B","push","pull","upper"). 짧고 사람이 알아보기 쉬운 것.
+        label: 사용자에게 보일 이름. 예 "가슴/삼두".
+        routine_slugs: 이 묶음에 들어가는 등록된 routine slug 들.
+
+      assignment — 묶음 → 시점 매핑.
+        kind=weekly: 요일 매핑. map: { mon, tue, wed, thu, fri, sat, sun → bucket key 또는 null(휴식). }
+        kind=sequence: 순환. order: ["A","B","C","D"]. get_state 가 최근 세션 보고 다음 차례 추론.
+        kind=freestyle: 매핑 없음 — 묶음만 등록해두고 매번 자유 선택. AI 가 사용자에게 묶음 보여주고 골라달라고 함.
+
+      체리피커(어떤 묶음도 없이 등록된 routine 중에서 매번 골라하는 경우)는 split_plan 등록 안 함 — define_split_plan 호출하지 말 것.
+
+      예시:
+        4분할 순환: buckets=[A:가슴/삼두, B:등/이두, C:하체, D:어깨/복근], assignment={kind:"sequence", order:["A","B","C","D"]}
+        주간 5분할: assignment={kind:"weekly", map:{mon:"A", tue:"B", wed:"C", thu:"D", fri:"E", sat:null, sun:null}}
+        자유 그룹핑: assignment={kind:"freestyle"} — 묶음만 정의
+
+      활성 plan 바꾸려면: AI 가 get_state 로 기존 plan 읽어서 같은 buckets/assignment 로 is_active=true 만 바꿔 재호출.
+    inputSchema:
+      type: object
+      properties:
+        slug:
+          type: string
+          description: snake_case 식별자. 예 four_day_split / weekly_5day / freestyle_groups.
+        name:
+          type: string
+          description: "사용자에게 보일 이름. 예 '근비대 4분할 A→B→C→D', '주간 5분할'."
+        buckets:
+          type: array
+          description: "묶음 배열. [{key, label, routine_slugs:[...]}]. 1개 이상."
+        assignment:
+          type: object
+          additionalProperties: true
+          description: "묶음 → 시점 매핑. {kind:'weekly', map:{mon,tue,...}} 또는 {kind:'sequence', order:[...]} 또는 {kind:'freestyle'}."
+        is_active:
+          type: boolean
+          description: "선택. true 면 이 plan 활성화 + 기존 활성 plan 자동 비활성. 생략 시 false."
+      required: [slug, name, buckets, assignment]
+
   - name: delete_entity
     description: |
-      등록된 entity 를 삭제한다. routine / metric / reminder / fact 통합 삭제.
+      등록된 entity 를 삭제한다. routine / metric / reminder / fact / split_plan 통합 삭제.
       사용자가 명시적으로 "지워줘" 라고 한 경우에만 호출.
       과거 기록(세션/측정/식단/ack)은 남는다.
     inputSchema:
@@ -264,10 +330,10 @@ tools:
       properties:
         kind:
           type: string
-          description: "routine / metric / reminder / fact 중 하나."
+          description: "routine / metric / reminder / fact / split_plan 중 하나."
         id:
           type: string
-          description: "삭제 대상 식별자. routine/metric/fact 는 slug, reminder 는 reminder id."
+          description: "삭제 대상 식별자. routine/metric/fact/split_plan 은 slug, reminder 는 reminder id."
         axis:
           type: string
           description: "kind=fact 일 때만 필수. exercise / health_metric / diet_reminder / baseline 중 하나."
@@ -278,28 +344,31 @@ tools:
       마도서의 현재 상태를 통째로 반환한다 — 응답·추천에 앞서 반드시 호출.
       반환:
         - protocol_step: 'awaiting_goal' / 'awaiting_initial_setup' / 'operational'
-        - ai_rules: AI 가 매 응답마다 지켜야 할 규약 (빈 추론 금지, 시각은 timezone 기준, 의학적 진단 흉내 금지, user_fact 축 합의 절차 등)
+        - ai_rules: AI 가 매 응답마다 지켜야 할 규약 (빈 추론 금지, 시각은 timezone 기준, 의학적 진단 흉내 금지, user_fact 축 합의 절차, RPE 는 '힘들었음 점수' 로 묻기 등)
         - recommended_next_action: 현 단계에서 AI 가 다음으로 해야 할 행동의 짧은 힌트
         - goal: { text, updated_at } 또는 null
         - settings: { timezone, activity_factor, height_cm, sex, birth_year }
         - server_now / server_now_local: 추측 금지용 서버 기준 시각
         - derived: { age, bmr, bmr_source, maintenance_kcal } — settings + 최근 body_weight_kg 로 자동 계산 (조건 불충족 필드는 null)
         - metrics: 등록 지표들 + 각각의 최근 측정값 + target 평가 + 7일 평균 + 샘플 수
-        - routines: 등록 루틴들 + 각각의 최근 세션
+        - routines: 등록 루틴들 + 각각의 progression + 최근 세션
         - recent_activities: 최근 7일 비루틴 활동
         - meals_today: 오늘(timezone 기준) 끼 합계 + 항목
         - reminders: 등록 알람들 + 오늘 슬롯별 상태(future/due/acked/missed)
         - user_facts: { exercise, health_metric, diet_reminder, baseline } — 축별 fact 묶음
+        - split_plans: 등록된 모든 분할 계획 목록
+        - active_split_plan: 활성 plan + today_bucket(weekly) 또는 next_bucket_hint(sequence). 없으면 null.
       list_* 함수 대신 이 함수가 모든 조회를 커버한다.
 
-  - name: next_weight
+  - name: next_target
     description: |
-      특정 루틴 운동의 다음 세션 추천 무게를 계산해서 반환한다.
-      직전 세션의 평균 RIR 과 default_rir_target 비교 → 기본 단위로 증감.
-      기본 increment: compound 2.5kg, isolation 1.25kg.
-      compound 의 경우 `fact:exercise:min_plate_increment_kg` (value.v) 가 있으면 그 값으로 대체.
-      weekly_cap_kg 가 설정되어 있으면 최근 7일 증량 누계가 cap 을 넘지 않도록 보호.
-      세션 기록이 없으면 next_weight=null + reason 반환.
+      특정 루틴 운동의 다음 세션 추천값을 계산해서 반환한다 — progression 축에 맞게.
+      직전 세션의 평균 RPE('힘들었음 점수') 와 default_rpe_target 비교 → progression+category 기준 단위로 증감.
+      기본 increment: weight+compound 2.5 / weight+isolation 1.25 / time 30 / distance 100 / reps 1 / hold 5. routine.default_increment 로 덮어쓸 수 있음.
+      weight+compound: fact:exercise:min_plate_increment_kg (value.v) 가 있으면 그 값으로 대체.
+      progression=time 은 방향 반전(낮을수록 좋음) — 쉽다면 더 빠른 목표.
+      weekly_cap 가 설정되어 있으면 최근 7일 진척 누계가 cap 을 넘지 않도록 보호.
+      세션 기록이 없으면 next_target=null + reason 반환.
     inputSchema:
       type: object
       properties:

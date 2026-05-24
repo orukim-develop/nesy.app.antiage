@@ -8,6 +8,12 @@ type Data = {
 const FACT_AXES = ["exercise", "health_metric", "diet_reminder", "baseline"] as const;
 type FactAxis = typeof FACT_AXES[number];
 
+const PROGRESSIONS = ["weight", "time", "distance", "reps", "hold"] as const;
+type Progression = typeof PROGRESSIONS[number];
+
+const SPLIT_KINDS = ["weekly", "sequence", "freestyle"] as const;
+const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+
 const AI_RULES = [
   "응답·추천 전 반드시 get_state 호출.",
   "goal 이 비어있으면 set_goal 부터.",
@@ -19,6 +25,10 @@ const AI_RULES = [
   "user_fact 등록 전 반드시 사용자에게 '[축이름] 카테고리에 [라벨]로 넣을게요' 라고 명시 후 합의 받기.",
   "축이 모호하면 사용자에게 'A 또는 B, 어느 쪽?' 직접 질문 — AI 단독 결정 금지.",
   "BMR 은 별도 metric 등록 불필요 — height_cm/sex/birth_year + body_weight_kg 측정으로 자동 계산되어 derived 에 들어옴.",
+  "define_routine_exercise 호출 시 progression (weight/time/distance/reps/hold) 사용자와 합의 후 선택. 표준 인체 가정 금지 — 다리/팔 없는 사용자도 progression=time 으로 '기어가기' 등 등록 가능.",
+  "progressive overload 대상 vs 자유 활동 분류 모호하면 사용자에게 직접 질문 — '이거 진척 추적해요? 아니면 그냥 활동 기록?'",
+  "RPE 는 '힘들었음 점수' 1~10 (높을수록 힘듦) — AI 는 사용자에게 RPE 용어 말고 '힘들었음 점수' 로 묻기.",
+  "분할은 define_split_plan 으로 — assignment.kind 는 weekly/sequence/freestyle. is_active=true 면 다른 plan 자동 비활성. 매번 골라 운동하는 체리피커는 split_plan 등록하지 말 것.",
 ];
 
 export async function run({ input, data }: {
@@ -38,9 +48,10 @@ export async function run({ input, data }: {
     case "define_reminder": return defineReminder(args, data);
     case "ack_reminder": return ackReminder(args, data);
     case "define_user_fact": return defineUserFact(args, data);
+    case "define_split_plan": return defineSplitPlan(args, data);
     case "delete_entity": return deleteEntity(args, data);
     case "get_state": return getState(data);
-    case "next_weight": return nextWeight(args, data);
+    case "next_target": return nextTarget(args, data);
     case "suggest_setup": return suggestSetup(data);
     case "check_reminders": return checkReminders(data);
     case "render_dashboard": return renderDashboard(args, data);
@@ -72,6 +83,11 @@ function hhmmInTz(tz: string, date: Date = new Date()): string {
   return new Intl.DateTimeFormat("en-GB", {
     timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false,
   }).format(date);
+}
+function weekdayKey(tz: string, date: Date = new Date()): string {
+  const wkd = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(date);
+  const map: Record<string, string> = { Sun: "sun", Mon: "mon", Tue: "tue", Wed: "wed", Thu: "thu", Fri: "fri", Sat: "sat" };
+  return map[wkd] ?? "mon";
 }
 const hhmmToMin = (h: string) => { const [a, b] = h.split(":").map(Number); return a * 60 + b; };
 
@@ -159,18 +175,89 @@ async function defineRoutine(args: any, data: Data) {
   if (!/^[a-z][a-z0-9_]*$/.test(slug)) throw new Error("slug 는 snake_case (소문자/숫자/_).");
   const display_name = String(args.display_name ?? "").trim();
   if (!display_name) throw new Error("display_name 필수.");
-  const category = String(args.category ?? "").trim();
-  if (!["compound", "isolation"].includes(category)) throw new Error("category 는 compound 또는 isolation.");
+  const progression = String(args.progression ?? "weight").trim();
+  if (!PROGRESSIONS.includes(progression as Progression)) {
+    throw new Error(`progression 은 ${PROGRESSIONS.join(" / ")} 중 하나.`);
+  }
   const unit = String(args.unit ?? "").trim();
-  if (!["kg", "lb"].includes(unit)) throw new Error("unit 는 kg 또는 lb.");
+  if (!unit) throw new Error("unit 필수.");
+
+  let category: string | null = null;
+  if (progression === "weight") {
+    category = String(args.category ?? "").trim();
+    if (!["compound", "isolation"].includes(category)) {
+      throw new Error("progression=weight 일 때 category 는 compound 또는 isolation.");
+    }
+  } else if (args.category) {
+    category = String(args.category);
+  }
+
   const routine = {
-    slug, display_name, category, unit,
-    default_rir_target: typeof args.default_rir_target === "number" ? args.default_rir_target : 2,
-    weekly_cap_kg: typeof args.weekly_cap_kg === "number" ? args.weekly_cap_kg : null,
+    slug, display_name, progression, unit, category,
+    default_rpe_target: typeof args.default_rpe_target === "number" ? args.default_rpe_target : 8,
+    default_increment: typeof args.default_increment === "number" ? args.default_increment : null,
+    weekly_cap: typeof args.weekly_cap === "number" ? args.weekly_cap : null,
     defined_at: nowIso(),
   };
   await data.set(`routine:${slug}`, routine);
   return { routine };
+}
+
+function normalizeSet(s: any, progression: string): any {
+  const rpe = Number(s.rpe);
+  if (!Number.isFinite(rpe) || rpe < 0 || rpe > 10) {
+    throw new Error("각 세트의 rpe 는 0~10 사이 숫자 ('힘들었음 점수').");
+  }
+  switch (progression) {
+    case "weight": {
+      const reps = Number(s.reps), weight = Number(s.weight);
+      if (!Number.isFinite(reps) || !Number.isFinite(weight)) {
+        throw new Error("progression=weight 의 각 세트는 reps/weight 숫자 필수.");
+      }
+      return { reps, weight, rpe };
+    }
+    case "time": {
+      const time = Number(s.time);
+      if (!Number.isFinite(time)) throw new Error("progression=time 의 각 세트는 time 숫자 필수.");
+      return { time, rpe };
+    }
+    case "distance": {
+      const distance = Number(s.distance);
+      if (!Number.isFinite(distance)) throw new Error("progression=distance 의 각 세트는 distance 숫자 필수.");
+      return { distance, rpe };
+    }
+    case "reps": {
+      const reps = Number(s.reps);
+      if (!Number.isFinite(reps)) throw new Error("progression=reps 의 각 세트는 reps 숫자 필수.");
+      return { reps, rpe };
+    }
+    case "hold": {
+      const hold = Number(s.hold);
+      if (!Number.isFinite(hold)) throw new Error("progression=hold 의 각 세트는 hold 숫자 필수.");
+      return { hold, rpe };
+    }
+    default: throw new Error(`알 수 없는 progression: ${progression}`);
+  }
+}
+
+function setValue(s: any, progression: string): number {
+  switch (progression) {
+    case "weight": return Number(s.weight);
+    case "time": return Number(s.time);
+    case "distance": return Number(s.distance);
+    case "reps": return Number(s.reps);
+    case "hold": return Number(s.hold);
+    default: return NaN;
+  }
+}
+
+function defaultIncrement(progression: string, category: string | null): number {
+  if (progression === "weight") return category === "compound" ? 2.5 : 1.25;
+  if (progression === "time") return 30;
+  if (progression === "distance") return 100;
+  if (progression === "reps") return 1;
+  if (progression === "hold") return 5;
+  return 1;
 }
 
 async function logSession(args: any, data: Data) {
@@ -179,20 +266,14 @@ async function logSession(args: any, data: Data) {
   if (!routine) throw new Error(`등록되지 않은 운동 slug: ${slug}. define_routine_exercise 먼저.`);
   const sets = Array.isArray(args.sets) ? args.sets : [];
   if (sets.length === 0) throw new Error("sets 1개 이상 필요.");
-  const normalized = sets.map((s: any) => ({
-    reps: Number(s.reps), weight: Number(s.weight), rir: Number(s.rir),
-  }));
-  for (const s of normalized) {
-    if (!Number.isFinite(s.reps) || !Number.isFinite(s.weight) || !Number.isFinite(s.rir)) {
-      throw new Error("각 세트는 reps/weight/rir 모두 숫자.");
-    }
-  }
+  const progression = routine.progression || "weight";
+  const normalized = sets.map((s: any) => normalizeSet(s, progression));
   const performed_at = String(args.performed_at ?? nowIso());
   const note = args.note ? String(args.note) : undefined;
-  const session: any = { slug, sets: normalized, performed_at };
+  const session: any = { slug, sets: normalized, performed_at, progression };
   if (note) session.note = note;
   await data.set(`session:${slug}:${performed_at}:${shortRand()}`, session);
-  const next = await computeNextWeight(slug, data).catch((e: any) => ({ error: e.message }));
+  const next = await computeNextTarget(slug, data).catch((e: any) => ({ error: e.message }));
   return { saved: session, next_recommendation: next };
 }
 
@@ -395,6 +476,68 @@ async function defineUserFact(args: any, data: Data) {
   return { fact };
 }
 
+async function defineSplitPlan(args: any, data: Data) {
+  const slug = String(args.slug ?? "").trim();
+  if (!/^[a-z][a-z0-9_]*$/.test(slug)) throw new Error("slug 는 snake_case.");
+  const name = String(args.name ?? "").trim();
+  if (!name) throw new Error("name 필수.");
+
+  const rawBuckets = Array.isArray(args.buckets) ? args.buckets : null;
+  if (!rawBuckets || rawBuckets.length === 0) throw new Error("buckets 1개 이상 필요.");
+  const buckets = rawBuckets.map((b: any, i: number) => {
+    const key = String(b?.key ?? "").trim();
+    if (!key) throw new Error(`buckets[${i}].key 필수.`);
+    const label = String(b?.label ?? "").trim();
+    if (!label) throw new Error(`buckets[${i}].label 필수.`);
+    const routine_slugs = Array.isArray(b?.routine_slugs) ? b.routine_slugs.map((x: any) => String(x)) : [];
+    return { key, label, routine_slugs };
+  });
+  const keys = new Set(buckets.map((b: any) => b.key));
+  if (keys.size !== buckets.length) throw new Error("buckets.key 중복.");
+
+  const rawAssign = args.assignment;
+  if (!rawAssign || typeof rawAssign !== "object") throw new Error("assignment object 필수.");
+  const kind = String(rawAssign.kind ?? "").trim();
+  if (!SPLIT_KINDS.includes(kind as any)) {
+    throw new Error(`assignment.kind 는 ${SPLIT_KINDS.join(" / ")} 중 하나.`);
+  }
+  let assignment: any = { kind };
+  if (kind === "weekly") {
+    const map = rawAssign.map;
+    if (!map || typeof map !== "object") throw new Error("assignment.kind=weekly 일 때 map object 필수.");
+    const norm: Record<string, string | null> = {};
+    for (const w of WEEKDAYS) {
+      const v = (map as any)[w];
+      if (v === null || v === undefined || v === "") norm[w] = null;
+      else {
+        const sv = String(v);
+        if (!keys.has(sv)) throw new Error(`assignment.map.${w}="${sv}" 가 buckets.key 에 없음.`);
+        norm[w] = sv;
+      }
+    }
+    assignment.map = norm;
+  } else if (kind === "sequence") {
+    const order = Array.isArray(rawAssign.order) ? rawAssign.order.map((x: any) => String(x)) : [];
+    if (order.length === 0) throw new Error("assignment.kind=sequence 일 때 order 1개 이상.");
+    for (const k of order) if (!keys.has(k)) throw new Error(`assignment.order 의 "${k}" 가 buckets.key 에 없음.`);
+    assignment.order = order;
+  }
+
+  const is_active = !!args.is_active;
+  if (is_active) {
+    const existing = (await data.list("split_plan:")).map(r => r.value).filter(nonNull);
+    for (const p of existing) {
+      if (p.slug !== slug && p.is_active) {
+        await data.set(`split_plan:${p.slug}`, { ...p, is_active: false });
+      }
+    }
+  }
+
+  const plan = { slug, name, buckets, assignment, is_active, defined_at: nowIso() };
+  await data.set(`split_plan:${slug}`, plan);
+  return { split_plan: plan };
+}
+
 async function deleteEntity(args: any, data: Data) {
   const kind = String(args.kind ?? "").trim();
   const id = String(args.id ?? "").trim();
@@ -404,6 +547,7 @@ async function deleteEntity(args: any, data: Data) {
     case "routine": key = `routine:${id}`; break;
     case "metric": key = `metric:${id}`; break;
     case "reminder": key = `reminder:${id}`; break;
+    case "split_plan": key = `split_plan:${id}`; break;
     case "fact": {
       const axis = String(args.axis ?? "").trim();
       if (!FACT_AXES.includes(axis as FactAxis)) {
@@ -412,7 +556,7 @@ async function deleteEntity(args: any, data: Data) {
       key = `fact:${axis}:${id}`;
       break;
     }
-    default: throw new Error("kind 는 routine / metric / reminder / fact 중 하나.");
+    default: throw new Error("kind 는 routine / metric / reminder / fact / split_plan 중 하나.");
   }
   return { deleted: await data.delete(key), kind, id, axis: args.axis ?? null };
 }
@@ -424,19 +568,21 @@ async function getState(data: Data) {
   const nowMin = hhmmToMin(hhmmInTz(settings.timezone));
   const sevenDaysAgo = Date.now() - 7 * 86400 * 1000;
 
-  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, derived] = await Promise.all([
+  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, splitPlansRaw, derived] = await Promise.all([
     data.list("metric:"),
     data.list("routine:"),
     data.list("activity:"),
     data.list("meal:"),
     data.list("reminder:"),
     data.list("fact:"),
+    data.list("split_plan:"),
     computeDerived(settings, data),
   ]);
   const metricDefs = metricDefsRaw.map(r => r.value).filter(nonNull);
   const routineDefs = routineDefsRaw.map(r => r.value).filter(nonNull);
   const reminderDefs = reminderDefsRaw.map(r => r.value).filter(nonNull);
   const facts = factsRaw.map(r => r.value).filter(nonNull);
+  const splitPlans = splitPlansRaw.map(r => r.value).filter(nonNull);
 
   const user_facts = {
     exercise: facts.filter((f: any) => f.axis === "exercise"),
@@ -511,7 +657,12 @@ async function getState(data: Data) {
     },
   };
 
-  const anyRegistered = metricDefs.length > 0 || routineDefs.length > 0 || reminderDefs.length > 0 || facts.length > 0;
+  const activePlan = splitPlans.find((p: any) => p.is_active) ?? null;
+  const active_split_plan = activePlan
+    ? await enrichActivePlan(activePlan, settings, data)
+    : null;
+
+  const anyRegistered = metricDefs.length > 0 || routineDefs.length > 0 || reminderDefs.length > 0 || facts.length > 0 || splitPlans.length > 0;
   let protocol_step: string;
   let recommended_next_action: string;
   if (!goal) {
@@ -540,15 +691,78 @@ async function getState(data: Data) {
     meals_today,
     reminders,
     user_facts,
+    split_plans: splitPlans,
+    active_split_plan,
   };
 }
 
-async function nextWeight(args: any, data: Data) {
-  const slug = String(args.slug ?? "");
-  return await computeNextWeight(slug, data);
+async function enrichActivePlan(plan: any, settings: any, data: Data) {
+  const kind = plan.assignment?.kind;
+  if (kind === "weekly") {
+    const wkey = weekdayKey(settings.timezone);
+    const bucketKey = plan.assignment.map?.[wkey] ?? null;
+    const bucket = bucketKey ? plan.buckets.find((b: any) => b.key === bucketKey) : null;
+    return {
+      ...plan,
+      today_bucket: bucket
+        ? { weekday: wkey, key: bucket.key, label: bucket.label, routine_slugs: bucket.routine_slugs }
+        : { weekday: wkey, key: null, label: "휴식일", routine_slugs: [] },
+      next_bucket_hint: null,
+    };
+  }
+  if (kind === "sequence") {
+    return {
+      ...plan,
+      today_bucket: null,
+      next_bucket_hint: await nextSequenceBucket(plan, data),
+    };
+  }
+  return { ...plan, today_bucket: null, next_bucket_hint: null };
 }
 
-async function computeNextWeight(slug: string, data: Data) {
+async function nextSequenceBucket(plan: any, data: Data) {
+  const order: string[] = plan.assignment?.order ?? [];
+  if (order.length === 0) return null;
+  const bucketOf = (k: string) => plan.buckets.find((b: any) => b.key === k);
+
+  const allSessions = (await data.list("session:"))
+    .map(r => r.value).filter(nonNull)
+    .sort((a: any, b: any) => String(b.performed_at).localeCompare(String(a.performed_at)));
+
+  if (allSessions.length === 0) {
+    const first = bucketOf(order[0]);
+    return first ? {
+      key: order[0], label: first.label, routine_slugs: first.routine_slugs,
+      reason: "세션 기록 없음 — 첫 번째 차례.",
+    } : null;
+  }
+
+  for (const sess of allSessions) {
+    const found = plan.buckets.find((b: any) => Array.isArray(b.routine_slugs) && b.routine_slugs.includes(sess.slug));
+    if (!found) continue;
+    const idx = order.indexOf(found.key);
+    if (idx === -1) continue;
+    const nextIdx = (idx + 1) % order.length;
+    const next = bucketOf(order[nextIdx]);
+    if (!next) continue;
+    return {
+      key: next.key, label: next.label, routine_slugs: next.routine_slugs,
+      last_bucket_key: found.key, last_session_at: sess.performed_at,
+    };
+  }
+  const first = bucketOf(order[0]);
+  return first ? {
+    key: order[0], label: first.label, routine_slugs: first.routine_slugs,
+    reason: "최근 세션이 plan buckets 에 매칭 안 됨 — 첫 번째부터.",
+  } : null;
+}
+
+async function nextTarget(args: any, data: Data) {
+  const slug = String(args.slug ?? "");
+  return await computeNextTarget(slug, data);
+}
+
+async function computeNextTarget(slug: string, data: Data) {
   const routine = await data.get(`routine:${slug}`);
   if (!routine) throw new Error(`등록되지 않은 운동 slug: ${slug}.`);
 
@@ -557,17 +771,22 @@ async function computeNextWeight(slug: string, data: Data) {
     .sort((a: any, b: any) => String(a.performed_at).localeCompare(String(b.performed_at)));
 
   if (sessions.length === 0) {
-    return { next_weight: null, reason: "세션 기록 없음 — 시작 무게는 사용자가 선택." };
+    return { next_target: null, reason: "세션 기록 없음 — 시작 값은 사용자가 선택." };
   }
 
   const last: any = sessions[sessions.length - 1];
-  const lastAvgRir = mean(last.sets.map((s: any) => s.rir));
-  const lastAvgWeight = mean(last.sets.map((s: any) => s.weight));
-  const target = routine.default_rir_target ?? 2;
+  const progression = routine.progression || "weight";
+  const direction: "increase" | "decrease" = progression === "time" ? "decrease" : "increase";
 
-  let increment = routine.category === "compound" ? 2.5 : 1.25;
-  let increment_source = "default";
-  if (routine.category === "compound") {
+  const lastAvgRpe = mean(last.sets.map((s: any) => Number(s.rpe)));
+  const lastAvgValue = mean(last.sets.map((s: any) => setValue(s, progression)));
+  const target = typeof routine.default_rpe_target === "number" ? routine.default_rpe_target : 8;
+
+  let increment: number = typeof routine.default_increment === "number"
+    ? routine.default_increment
+    : defaultIncrement(progression, routine.category ?? null);
+  let increment_source = typeof routine.default_increment === "number" ? "routine.default_increment" : "default";
+  if (progression === "weight" && routine.category === "compound") {
     const plateFact = await data.get(`fact:exercise:min_plate_increment_kg`);
     if (plateFact?.value && typeof plateFact.value.v === "number" && plateFact.value.v > 0) {
       increment = plateFact.value.v;
@@ -575,36 +794,48 @@ async function computeNextWeight(slug: string, data: Data) {
     }
   }
 
-  let delta: number;
-  if (lastAvgRir > target + 1) delta = increment * 2;
-  else if (lastAvgRir >= target) delta = increment;
-  else if (lastAvgRir >= target - 1) delta = 0;
-  else delta = -increment;
+  let push: number;
+  if (lastAvgRpe < target - 1) push = 2;
+  else if (lastAvgRpe <= target) push = 1;
+  else if (lastAvgRpe <= target + 1) push = 0;
+  else push = -1;
 
-  let proposed = lastAvgWeight + delta;
+  const delta = direction === "increase" ? push * increment : -(push * increment);
+  let proposed = lastAvgValue + delta;
+
   let cap_applied = false;
-  if (routine.weekly_cap_kg && routine.weekly_cap_kg > 0) {
+  if (typeof routine.weekly_cap === "number" && routine.weekly_cap > 0) {
     const sevenDaysAgo = Date.now() - 7 * 86400 * 1000;
     const recent = sessions.filter((s: any) => new Date(s.performed_at).getTime() >= sevenDaysAgo);
     if (recent.length > 0) {
-      const earliestAvg = mean(recent[0].sets.map((s: any) => s.weight));
-      if (proposed - earliestAvg > routine.weekly_cap_kg) {
-        proposed = earliestAvg + routine.weekly_cap_kg;
-        cap_applied = true;
+      const earliestAvg = mean(recent[0].sets.map((s: any) => setValue(s, progression)));
+      if (direction === "increase") {
+        if (proposed - earliestAvg > routine.weekly_cap) {
+          proposed = earliestAvg + routine.weekly_cap;
+          cap_applied = true;
+        }
+      } else {
+        if (earliestAvg - proposed > routine.weekly_cap) {
+          proposed = earliestAvg - routine.weekly_cap;
+          cap_applied = true;
+        }
       }
     }
   }
 
   return {
-    next_weight: proposed,
+    next_target: proposed,
     unit: routine.unit,
+    progression,
+    direction,
     basis: {
-      last_avg_weight: lastAvgWeight,
-      last_avg_rir: lastAvgRir,
-      target_rir: target,
+      last_avg_value: lastAvgValue,
+      last_avg_rpe: lastAvgRpe,
+      target_rpe: target,
       increment,
       increment_source,
-      delta_before_cap: delta,
+      push_multiplier: push,
+      delta,
       weekly_cap_applied: cap_applied,
       session_count: sessions.length,
     },
@@ -641,9 +872,9 @@ const TEMPLATES = [
     match: /(근력|벤치|스쿼트|데드|3대|strength|bench|squat|deadlift|powerlift)/i,
     label: "3대 운동 루틴 표준 셋업",
     routines: [
-      { slug: "squat", display_name: "백 스쿼트", category: "compound", unit: "kg", default_rir_target: 2, weekly_cap_kg: 5 },
-      { slug: "bench_press", display_name: "벤치프레스", category: "compound", unit: "kg", default_rir_target: 2, weekly_cap_kg: 5 },
-      { slug: "deadlift", display_name: "데드리프트", category: "compound", unit: "kg", default_rir_target: 2, weekly_cap_kg: 5 },
+      { slug: "squat", display_name: "백 스쿼트", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5 },
+      { slug: "bench_press", display_name: "벤치프레스", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5 },
+      { slug: "deadlift", display_name: "데드리프트", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5 },
     ],
     facts: [
       { axis: "exercise", slug: "min_plate_increment_kg", label: "최소 plate 증분", value_example: { v: 2.5 }, hint: "헬스장에 1.25kg 원판이 없으면 v: 5 로 등록." },
@@ -675,6 +906,9 @@ const TEMPLATES = [
     metrics: [
       { slug: "resting_hr", display_name: "안정시 심박수", unit: "bpm", priority: "high" },
       { slug: "vo2max", display_name: "VO2max", unit: "mL/kg/min", priority: "normal" },
+    ],
+    routines: [
+      { slug: "run_5k", display_name: "5km 러닝", progression: "time", unit: "seconds", default_rpe_target: 8 },
     ],
   },
 ];
@@ -754,6 +988,7 @@ function buildDashboardHtml(tab: string, s: any): string {
   if (tab === "overview") {
     content += renderOverviewCard(s);
   } else if (tab === "exercise") {
+    content += renderSplitPlanCard(s.active_split_plan);
     content += renderExerciseCard(s.routines, s.recent_activities);
     content += renderFactsCard("운동 환경/장비/제약", s.user_facts.exercise);
   } else if (tab === "metrics") {
@@ -783,6 +1018,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0
 .card h3{margin:0 0 9px;font-size:12px;color:#c0c0c0;font-weight:500;text-transform:uppercase;letter-spacing:.5px}
 .row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1f1f1f;gap:8px}
 .row:last-child{border-bottom:none}
+.row.hi{background:#1a1530;border-radius:4px;padding-left:6px;padding-right:6px;margin:0 -6px}
 .name{color:#d4d4d4;min-width:0}
 .val{color:#fafafa;font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0;word-break:break-word}
 .badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;margin-left:6px;vertical-align:middle}
@@ -818,6 +1054,7 @@ function renderOverviewCard(s: any): string {
   html += `<div class="row"><div class="name">건강 지표</div><div class="val">${s.metrics.length}</div></div>`;
   html += `<div class="row"><div class="name">알람</div><div class="val">${s.reminders.length}</div></div>`;
   html += `<div class="row"><div class="name">사용자 사실 (4축 합계)</div><div class="val">${factCount}</div></div>`;
+  html += `<div class="row"><div class="name">활성 분할</div><div class="val">${s.active_split_plan ? escapeHtml(s.active_split_plan.name) : '<span class="meta">없음</span>'}</div></div>`;
   if (s.derived?.age !== null) {
     html += `<div class="row"><div class="name">나이 (자동)</div><div class="val">${s.derived.age}세</div></div>`;
   }
@@ -825,6 +1062,10 @@ function renderOverviewCard(s: any): string {
     html += `<div class="row"><div class="name">기초대사량 (Mifflin-St Jeor)</div><div class="val">${s.derived.bmr} kcal</div></div>`;
   }
   html += `</div>`;
+
+  if (s.active_split_plan) {
+    html += renderTodayBucketCard(s.active_split_plan);
+  }
 
   const critical = s.metrics.filter((m: any) => m.priority === "critical" && m.in_target === false);
   if (critical.length > 0) {
@@ -874,6 +1115,82 @@ function renderOverviewCard(s: any): string {
   return html;
 }
 
+function renderTodayBucketCard(plan: any): string {
+  const kind = plan.assignment?.kind;
+  let html = `<div class="card"><h3>오늘 차례 — ${escapeHtml(plan.name)}</h3>`;
+  if (kind === "weekly") {
+    const tb = plan.today_bucket;
+    if (tb?.key) {
+      html += `<div class="row"><div class="name">오늘 묶음</div><div class="val">${escapeHtml(tb.label)} <span class="meta">(${escapeHtml(tb.key)})</span></div></div>`;
+      const slugs = (tb.routine_slugs || []).map(escapeHtml).join(", ");
+      html += `<div class="row"><div class="name"><span class="meta">포함 운동</span></div><div class="val"><span class="meta">${slugs || "없음"}</span></div></div>`;
+    } else {
+      html += `<div class="row"><div class="name">오늘</div><div class="val"><span class="meta">휴식일</span></div></div>`;
+    }
+  } else if (kind === "sequence") {
+    const h = plan.next_bucket_hint;
+    if (h) {
+      html += `<div class="row"><div class="name">다음 차례</div><div class="val">${escapeHtml(h.label)} <span class="meta">(${escapeHtml(h.key)})</span></div></div>`;
+      const slugs = (h.routine_slugs || []).map(escapeHtml).join(", ");
+      html += `<div class="row"><div class="name"><span class="meta">포함 운동</span></div><div class="val"><span class="meta">${slugs || "없음"}</span></div></div>`;
+      if (h.last_session_at) {
+        html += `<div class="row"><div class="name"><span class="meta">직전 ${escapeHtml(h.last_bucket_key)}</span></div><div class="val"><span class="meta">${escapeHtml(String(h.last_session_at).slice(0, 10))}</span></div></div>`;
+      } else if (h.reason) {
+        html += `<div class="row"><div class="name"></div><div class="val"><span class="meta">${escapeHtml(h.reason)}</span></div></div>`;
+      }
+    }
+  } else if (kind === "freestyle") {
+    html += `<div class="row"><div class="name">자유 선택</div><div class="val">${plan.buckets.length}개 묶음 중 선택</div></div>`;
+  }
+  html += "</div>";
+  return html;
+}
+
+function renderSplitPlanCard(plan: any): string {
+  if (!plan) {
+    return '<div class="card"><h3>분할 계획</h3><div class="empty">활성 분할 없음 — 체리피커 모드 또는 미설정.</div></div>';
+  }
+  const kind = plan.assignment?.kind;
+  let html = `<div class="card"><h3>활성 분할 — ${escapeHtml(plan.name)} <span class="meta">(${escapeHtml(kind)})</span></h3>`;
+
+  if (kind === "weekly") {
+    const WEEK_LABEL: Record<string, string> = { mon: "월", tue: "화", wed: "수", thu: "목", fri: "금", sat: "토", sun: "일" };
+    const order = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    const todayKey = plan.today_bucket?.weekday;
+    for (const w of order) {
+      const bk = plan.assignment.map?.[w];
+      const bucket = bk ? plan.buckets.find((b: any) => b.key === bk) : null;
+      const isToday = todayKey === w;
+      const cls = isToday ? "row hi" : "row";
+      const badge = isToday ? ' <span class="badge due">오늘</span>' : "";
+      html += `<div class="${cls}"><div class="name">${WEEK_LABEL[w]}${badge}</div><div class="val">${bucket ? escapeHtml(bucket.label) : '<span class="meta">휴식</span>'}</div></div>`;
+    }
+  } else if (kind === "sequence") {
+    const nextKey = plan.next_bucket_hint?.key;
+    for (const k of plan.assignment.order) {
+      const bucket = plan.buckets.find((b: any) => b.key === k);
+      if (!bucket) continue;
+      const isNext = nextKey === k;
+      const cls = isNext ? "row hi" : "row";
+      const badge = isNext ? ' <span class="badge due">다음</span>' : "";
+      html += `<div class="${cls}"><div class="name">${escapeHtml(bucket.key)}${badge}</div><div class="val">${escapeHtml(bucket.label)}</div></div>`;
+    }
+  } else {
+    for (const bucket of plan.buckets) {
+      html += `<div class="row"><div class="name">${escapeHtml(bucket.key)}</div><div class="val">${escapeHtml(bucket.label)}</div></div>`;
+    }
+  }
+  html += "</div>";
+
+  html += `<div class="card"><h3>분할 묶음 상세 (${plan.buckets.length})</h3>`;
+  for (const b of plan.buckets) {
+    const slugs = (b.routine_slugs || []).map(escapeHtml).join(", ");
+    html += `<div class="row"><div class="name">${escapeHtml(b.key)} · ${escapeHtml(b.label)}</div><div class="val"><span class="meta">${slugs || "없음"}</span></div></div>`;
+  }
+  html += "</div>";
+  return html;
+}
+
 function renderMetricsCard(metrics: any[]): string {
   if (metrics.length === 0) {
     return '<div class="card"><h3>건강 지표</h3><div class="empty">등록된 지표 없음.</div></div>';
@@ -898,17 +1215,18 @@ function renderMetricsCard(metrics: any[]): string {
 }
 
 function renderExerciseCard(routines: any[], activities: any[]): string {
-  let html = '<div class="card"><h3>운동</h3>';
+  let html = '<div class="card"><h3>운동 루틴</h3>';
   if (routines.length === 0 && activities.length === 0) {
     html += '<div class="empty">등록된 루틴/활동 없음.</div></div>';
     return html;
   }
   for (const r of routines) {
     const last = r.last_session;
+    const progBadge = r.progression ? `<span class="meta">(${escapeHtml(r.progression)})</span>` : "";
     const summary = last
       ? `${last.sets.length}세트 · ${escapeHtml(String(last.performed_at).slice(0, 10))}`
       : '<span class="meta">기록 없음</span>';
-    html += `<div class="row"><div class="name">${escapeHtml(r.display_name)} <span class="meta">(${r.category})</span></div><div class="val">${summary}</div></div>`;
+    html += `<div class="row"><div class="name">${escapeHtml(r.display_name)} ${progBadge}</div><div class="val">${summary}</div></div>`;
   }
   if (activities.length > 0) {
     html += `<div class="meta" style="margin:8px 0 4px">최근 7일 활동 ${activities.length}건</div>`;
