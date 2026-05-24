@@ -1,6 +1,6 @@
 # 늙는 속도를 늦추는 마법 (nesy.app.antiage)
 
-호출 AI(Claude / ChatGPT / Gemini)의 외장 기억과 사실 계산기 역할의 nesy.app 마도서. 호출어 `젊음의샘` / `antiage`.
+호출 AI(Claude / ChatGPT / Gemini)의 외장 기억과 사실 계산기 역할의 nesy.app 마도서. 호출어 `네시, 저속노화` / `네시, 안티에이지` / `네시, Antiage` (호출어는 nesy.app 마켓플레이스 UI에서 관리 — 본 레포 코드와 무관).
 
 운동 · 건강지표 · 식단+알람 · 사용자 사실(4축) 으로 사용자 상태를 저장하고, AI 가 `get_state` 결과(빈 추론 방지 메타 + 사실)에 근거해서만 응답·추천하도록 강제한다. 마도서 본체는 추천하지 않고 데이터 통로와 검증된 공식(progressive overload, target 범위 평가, Mifflin-St Jeor BMR)만 제공.
 
@@ -13,7 +13,18 @@
 | diet_reminder | `log_meal` + `define_reminder` + `define_user_fact(axis=diet_reminder)` (식단 제약) | 식단 + 알람 |
 | baseline | `define_user_fact(axis=baseline)` (직업·수면 등 천천히 변하는 본인 정보) | 베이스라인 |
 
-`define_user_fact` 는 코드가 사전 정의할 수 없는 정보(헬스장 바 무게, 의수·의족, 알레르기, 식단 제약, 직업 등) 를 AI 가 분류해서 적재하는 자유 슬롯. AI 는 등록 전 반드시 사용자에게 **"이거 [축이름] 카테고리에 [라벨]로 넣을게요"** 라고 명시하고 합의 받아야 한다. 모호하면 사용자에게 직접 묻는다.
+`define_user_fact` 는 코드가 사전 정의할 수 없는 정보(헬스장 바 무게, 의수·의족, 알레르기, 식단 제약, 직업 등) 를 AI 가 분류해서 적재하는 자유 슬롯. AI 는 등록 전 반드시 **사용자 발화 언어**로 분류 의도를 명시하고 합의를 받아야 한다 — 한국어 화자면 한국어, 영어 화자면 영어, 다른 언어면 그 언어. 영문 slug/axis 코드 노출 금지. 모호하면 두 선택지를 사용자 언어로 풀어서 직접 묻는다.
+
+축 자연어 표현 예시:
+
+| axis | 한국어 | 영어 |
+|---|---|---|
+| `exercise` | 운동 환경/장비/제약 | workout environment/equipment/constraints |
+| `health_metric` | 건강 관련 정보(알레르기·복용약·만성질환 등) | health-related info (allergies, meds, conditions) |
+| `diet_reminder` | 식단 제약/알람 관련 | diet constraints / reminders |
+| `baseline` | 기본 정보(직업·수면·생활패턴 등) | baseline info (job, sleep, lifestyle) |
+
+다른 언어 화자는 의미 보존하며 그 언어로 자연 번역.
 
 특수 slug `fact:exercise:min_plate_increment_kg` (value `{ v: 2.5 }`) 가 등록되면 `next_target` 계산 시 compound 무게 운동의 증분 단위로 자동 사용 — 헬스장에 1.25kg 원판이 없을 때 `v: 5` 등으로 등록.
 

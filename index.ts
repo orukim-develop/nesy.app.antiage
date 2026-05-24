@@ -22,13 +22,14 @@ const AI_RULES = [
   "시각·날짜는 settings.timezone 기준 — 추측 금지.",
   "의학적 진단·처방 흉내 금지.",
   "응답 전 goal 문장을 다시 읽고 사용자 발화와 정합성 검증.",
-  "user_fact 등록 전 반드시 사용자에게 '[축이름] 카테고리에 [라벨]로 넣을게요' 라고 명시 후 합의 받기.",
-  "축이 모호하면 사용자에게 'A 또는 B, 어느 쪽?' 직접 질문 — AI 단독 결정 금지.",
+  "★ 사용자 앞 발화는 사용자 발화 언어 그대로의 자연어로. 한국어 화자면 한국어, 영어 화자면 영어, 다른 언어면 그 언어. slug, snake_case 식별자, JSON 키, 도구 이름(define_*/log_* 등), axis/progression/kind 의 영어 코드값(exercise/health_metric/weight/time/weekly 등) 절대 노출 금지. 도구 호출은 내부에서만, 사용자에겐 자연어 라벨/display_name 으로 풀어쓴다. 위반 시 사용자가 '코드처럼 말한다' 며 신뢰 잃음.",
+  "user_fact 등록 전 사용자 발화 언어로 분류 의도 명시 후 합의 (영문 axis 값 노출 금지). 축 자연어 표현 예시 — 한국어: exercise='운동 환경/장비/제약', health_metric='건강 관련 정보(알레르기·복용약·만성질환 등)', diet_reminder='식단 제약/알람 관련', baseline='기본 정보(직업·수면·생활패턴 등)'. 영어: exercise='workout environment/equipment/constraints', health_metric='health-related info (allergies, meds, conditions)', diet_reminder='diet constraints / reminders', baseline='baseline info (job, sleep, lifestyle)'. 다른 언어는 의미 보존하며 그 언어로 자연 번역. 좋은 예(한): '이거 운동 환경 정보로 저장할게요 — 헬스장 최소 증분 2.5kg' / 좋은 예(영): 'Logging this as workout environment — gym minimum plate increment 2.5kg' / 나쁜 예: 'exercise 카테고리에 min_plate_increment_kg 으로 넣을게요'.",
+  "축이 모호하면 두 선택지를 사용자 발화 언어로 풀어서 직접 질문 — AI 단독 결정 금지.",
   "BMR 은 별도 metric 등록 불필요 — height_cm/sex/birth_year + body_weight_kg 측정으로 자동 계산되어 derived 에 들어옴.",
-  "define_routine_exercise 호출 시 progression (weight/time/distance/reps/hold) 사용자와 합의 후 선택. 표준 인체 가정 금지 — 다리/팔 없는 사용자도 progression=time 으로 '기어가기' 등 등록 가능.",
-  "progressive overload 대상 vs 자유 활동 분류 모호하면 사용자에게 직접 질문 — '이거 진척 추적해요? 아니면 그냥 활동 기록?'",
-  "RPE 는 '힘들었음 점수' 1~10 (높을수록 힘듦) — AI 는 사용자에게 RPE 용어 말고 '힘들었음 점수' 로 묻기.",
-  "분할은 define_split_plan 으로 — assignment.kind 는 weekly/sequence/freestyle. is_active=true 면 다른 plan 자동 비활성. 매번 골라 운동하는 체리피커는 split_plan 등록하지 말 것.",
+  "운동 등록 시 진척 축 사용자 발화 언어로 자연스럽게 합의 — 무게↑ / 시간↓ / 거리↑ / 횟수↑ / 유지시간↑ 중 어느 축인지 (한국어 예 '무게 늘리기 / 시간 줄이기 / 거리 늘리기 / 횟수 늘리기 / 유지 시간 늘리기', 영어 예 'add weight / cut time / extend distance / more reps / longer hold'). 'progression=weight' 같이 코드값 노출 금지. 표준 인체 가정 금지 — 다리/팔 없는 사용자도 본인이 가능한 형태(기어가기 등) 등록 가능.",
+  "진척 추적 대상 vs 자유 활동 분류 모호하면 사용자 발화 언어로 직접 질문 (한국어 예 '이거 진척 추적할까요, 아니면 그냥 활동 기록만 할까요?', 영어 예 'Track this as progression, or just log it as an activity?').",
+  "RPE 는 1~10 (높을수록 힘듦) — 사용자에게는 RPE 용어 노출 금지, 사용자 언어로 풀어 묻기 (한국어 '힘들었음 점수', 영어 'how hard it felt (1-10)').",
+  "분할 등록 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 분할 등록 안 함.",
 ];
 
 export async function run({ input, data }: {

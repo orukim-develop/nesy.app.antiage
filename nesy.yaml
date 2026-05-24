@@ -250,9 +250,15 @@ tools:
 
       AI 가 지켜야 할 절차 (위반 시 사용자 신뢰 손상):
         1. 사용자 발화에서 사실 후보를 식별
-        2. "이거 [축이름] 카테고리에 [라벨]로 넣을게요" 라고 사용자에게 명시
+        2. 사용자 발화 언어로 분류 의도 명시 + 합의 — 영문 axis 값/slug 노출 금지. 사용자가 한국어 화자면 한국어, 영어 화자면 영어, 다른 언어면 그 언어로.
+           축 자연어 표현 예시 (한국어): exercise → "운동 환경/장비/제약", health_metric → "건강 관련 정보(알레르기·복용약·만성질환 등)", diet_reminder → "식단 제약/알람 관련", baseline → "기본 정보(직업·수면·생활패턴 등)"
+           축 자연어 표현 예시 (영어): exercise → "workout environment/equipment/constraints", health_metric → "health-related info (allergies, meds, conditions)", diet_reminder → "diet constraints / reminders", baseline → "baseline info (job, sleep, lifestyle)"
+           다른 언어는 의미 보존하며 그 언어로 자연 번역.
+           좋은 예 (한국어): "이거 운동 환경 정보로 저장할게요 — '헬스장 최소 증분 2.5kg'"
+           좋은 예 (영어): "Logging this as workout environment — gym minimum plate increment 2.5kg"
+           나쁜 예: "exercise 카테고리에 min_plate_increment_kg 으로 넣을게요"
         3. 사용자 합의를 받은 뒤에만 호출
-        4. 축이 모호하면 "A 또는 B, 어느 쪽?" 사용자에게 직접 질문 — AI 단독 결정 금지
+        4. 축이 모호하면 두 선택지를 사용자 언어로 풀어서 직접 질문 — AI 단독 결정 금지
 
       value 는 항상 object 로 저장. 스칼라(숫자/문자열/불린)는 `{ v: 값 }` 으로 감싼다 — next_target 등 마도서 내부 로직이 v 키를 기대.
       목록은 `{ items: [...] }`, 구조체는 자유 키.
