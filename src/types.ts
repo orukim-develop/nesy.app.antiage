@@ -169,9 +169,6 @@ export interface Settings {
   target_weight_min: number;
   target_weight_max: number;
   target_weight_rule: 'always_in_range' | 'fasted_only' | 'daily_average';
-  bar_weight_kg_smith: number;
-  bar_weight_verified: boolean;
-  bar_weight_kg_barbell: number;
   activity_factor: number;
   pr_squat_kg: number;
   pr_bench_press_kg: number;

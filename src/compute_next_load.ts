@@ -139,13 +139,6 @@ export async function computeNextLoad(ctx: RunCtx): Promise<ComputeResult> {
     warnings.push(...r.warnings);
   }
 
-  // ───── 봉 무게 검증 경고 (스미스머신 사용 시) ─────
-  if (lastEquipment === 'smith' && !settings.bar_weight_verified) {
-    warnings.push(
-      `bar_weight_verified=false: 스미스머신 봉 무게 ${settings.bar_weight_kg_smith}kg 으로 계산. 다이소 행잉저울로 측정 권장.`,
-    );
-  }
-
   // ───── 디트레이닝 경고 ─────
   if (lastDate) {
     const gap = daysBetween(lastDate, today);

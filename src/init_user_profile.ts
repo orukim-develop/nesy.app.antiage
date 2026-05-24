@@ -17,9 +17,6 @@ export const PROFILE_KEYS = [
   'target_weight_min',
   'target_weight_max',
   'target_weight_rule',
-  'bar_weight_kg_smith',
-  'bar_weight_kg_barbell',
-  'bar_weight_verified',
   'activity_factor',
   'pr_squat_kg',
   'pr_bench_press_kg',
@@ -32,8 +29,8 @@ export const PROFILE_KEYS = [
 ] as const;
 
 // "비어있다" 판정 — 이 키가 missing_settings 에 들어갈 조건.
-// 일부 키 (target_weight_rule, bar_weight_kg_*, bar_weight_verified, activity_factor,
-//          timezone, supplement_window_minutes) 는 합리적 디폴트가 있으므로 missing 으로 보지 않음.
+// 일부 키 (target_weight_rule, activity_factor, timezone, supplement_window_minutes) 는
+// 합리적 디폴트가 있으므로 missing 으로 보지 않음.
 export const REQUIRED_PROFILE_KEYS = [
   'target_weight_min',
   'target_weight_max',
@@ -122,7 +119,6 @@ function validateValue(key: string, value: unknown): string | null {
   // 숫자 키
   const numberKeys = new Set([
     'target_weight_min', 'target_weight_max',
-    'bar_weight_kg_smith', 'bar_weight_kg_barbell',
     'activity_factor',
     'pr_squat_kg', 'pr_bench_press_kg', 'pr_shoulder_press_kg', 'pr_deadlift_kg',
     'supplement_window_minutes',
@@ -145,12 +141,6 @@ function validateValue(key: string, value: unknown): string | null {
     if (key === 'supplement_window_minutes' && (value < 5 || value > 240)) {
       return `supplement_window_minutes 는 5~240 범위`;
     }
-    return null;
-  }
-
-  // boolean
-  if (key === 'bar_weight_verified') {
-    if (typeof value !== 'boolean') return `boolean 필요`;
     return null;
   }
 

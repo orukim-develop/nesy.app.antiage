@@ -11,7 +11,7 @@ tools:
   - name: record_session
     description: |
       운동 세션 한 건을 기록합니다. "오늘 스쿼트 60kg 5회 3세트" 같은 보고를 받으면 호출.
-      스미스머신이면 user_settings.bar_weight_kg_smith 가 포함된 총 중량(kg)을 weight_kg 에 넣을 것.
+      weight_kg 는 봉을 포함한 총 중량(kg). 스미스머신/프리웨이트 비교 차단을 위해 equipment 도 가능하면 채울 것.
       반환값의 warnings 에 ① 같은 운동 직전 대비 15% 이상 증량 ② 통증 발생 ③ 활성 부상 부위와 충돌
       세 가지 신호가 들어옴 — 호출 AI 가 그대로 사용자에게 전달.
       주의: 사용자가 "오늘", "어제" 같은 상대 시간을 말하면 절대 추측하지 말고
@@ -29,7 +29,7 @@ tools:
             이 세션에서 한 운동 리스트. 각 원소는 객체이며 다음 키를 가진다.
             { name: string (운동명. 예 'squat'·'bench_press'·'deadlift'·'shoulder_press'·'running_km'. snake_case 권장),
               equipment?: 'smith'|'barbell'|'dumbbell'|'machine'|'bodyweight'|'cardio' (스미스/프리웨이트 직접 비교 차단을 위해 가능하면 항상 채울 것),
-              sets: 배열, 각 원소는 { weight_kg?: number (봉 포함 총 중량 kg. 스미스머신은 user_settings.bar_weight_kg_smith 합산값), reps?: integer, rir?: integer (Reps In Reserve 0-5. 모르면 null 또는 생략), duration_min?: number (유산소용), distance_km?: number (유산소용) } }
+              sets: 배열, 각 원소는 { weight_kg?: number (봉 포함 총 중량 kg — 사용자가 실제로 든 무게 그대로), reps?: integer, rir?: integer (Reps In Reserve 0-5. 모르면 null 또는 생략), duration_min?: number (유산소용), distance_km?: number (유산소용) } }
             name 과 sets 는 필수.
         pain:
           type: object
@@ -297,15 +297,6 @@ tools:
         target_weight_rule:
           type: string
           description: "'always_in_range' | 'fasted_only' | 'daily_average'. 기본 always_in_range."
-        bar_weight_kg_smith:
-          type: number
-          description: 스미스머신 봉 무게 kg. 헬스장 측정값. 기본 20.
-        bar_weight_kg_barbell:
-          type: number
-          description: 프리웨이트 바벨 봉 무게 kg. 기본 20 (표준 올림픽 바).
-        bar_weight_verified:
-          type: boolean
-          description: 봉 무게 실측 검증했는지. 행잉저울 등으로 측정 후 true.
         activity_factor:
           type: number
           description: BMR 곱셈 활동계수. 1.2(좌식)/1.375(가벼움)/1.55(중간)/1.725(높음)/1.9(매우높음).
@@ -406,21 +397,6 @@ user_settings:
     description: |
       목표 체중 측정 규칙. always_in_range = 식후 포함 측정 시점 무관 항상 범위 안.
       이 값을 호출 AI 가 멋대로 해석하지 않도록 enum 으로 박는다.
-
-  - key: bar_weight_kg_smith
-    type: number
-    default: 20
-    description: 스미스머신 봉 무게 kg. 통계 디폴트 — 헬스장 실측이 다르면 행잉저울로 측정 후 갱신.
-
-  - key: bar_weight_verified
-    type: boolean
-    default: false
-    description: 봉 무게 실측 검증 여부. false 면 compute_next_load 의 warnings 에 표시 — 사용자가 측정해 true 로 바꿀 때까지.
-
-  - key: bar_weight_kg_barbell
-    type: number
-    default: 20
-    description: 프리웨이트 바벨 봉 무게 kg. 표준 올림픽 바 기준.
 
   - key: activity_factor
     type: number

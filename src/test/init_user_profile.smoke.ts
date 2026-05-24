@@ -141,12 +141,12 @@ console.log('14) update_user_settings 와 호환 — 개별 key update 가능');
 // 플랫폼 시뮬: update_user_settings 도 결국 __settings 키에 머지.
 // 여기서는 데이터 레이어에 직접 set 해서 호환성 확인.
 const cur = await data.get('__settings');
-await data.set('__settings', { ...cur, bar_weight_kg_smith: 22 });
+await data.set('__settings', { ...cur, supplement_window_minutes: 45 });
 const st3 = await call('get_state', {}) as any;
 assert(st3.missing_settings.length === 0, '미설정 0 유지');
-// settings 새로 부르면 22 가 반영돼야 (get_state 가 settings 를 다시 부르므로)
+// settings 새로 부르면 반영돼야 (get_state 가 settings 를 다시 부르므로)
 const settingsAfterDirect = await data.get('__settings');
-assert(settingsAfterDirect.bar_weight_kg_smith === 22, 'direct set 반영');
+assert(settingsAfterDirect.supplement_window_minutes === 45, 'direct set 반영');
 
 console.log('15) init_user_profile — 모든 인자 omit → no-op 처럼 동작');
 const r4 = await call('init_user_profile', {}) as any;

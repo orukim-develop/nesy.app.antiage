@@ -169,8 +169,6 @@ export async function getState(ctx: RunCtx) {
       target_weight_range: [settings.target_weight_min, settings.target_weight_max],
       target_weight_rule: settings.target_weight_rule,
       four_goals: settings.four_goals,
-      bar_weight_kg_smith: settings.bar_weight_kg_smith,
-      bar_weight_verified: settings.bar_weight_verified,
       pr: {
         squat: settings.pr_squat_kg,
         bench_press: settings.pr_bench_press_kg,

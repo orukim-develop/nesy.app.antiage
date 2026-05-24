@@ -50,7 +50,7 @@
 
 `missing_settings` 가 보고하는 필수 키: `target_weight_min`, `target_weight_max`, `pr_squat_kg`, `pr_bench_press_kg`, `pr_shoulder_press_kg`, `pr_deadlift_kg`, `four_goals`, `next_blood_panel_target` (8개).
 
-합리적 디폴트가 있는 키 (`bar_weight_kg_smith` 20, `activity_factor` 1.4, `timezone` Asia/Seoul, `supplement_window_minutes` 30 등) 는 미설정이어도 missing 으로 보고하지 않음. 사용자가 다르면 `update_user_settings` 로 개별 수정.
+합리적 디폴트가 있는 키 (`activity_factor` 1.4, `timezone` Asia/Seoul, `supplement_window_minutes` 30, `target_weight_rule` always_in_range) 는 미설정이어도 missing 으로 보고하지 않음. 사용자가 다르면 `update_user_settings` 로 개별 수정.
 
 ## 호출 마법언어
 
