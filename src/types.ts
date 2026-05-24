@@ -1,4 +1,9 @@
-// 공통 타입 정의. 모든 핸들러가 import.
+// 공통 타입. 모든 핸들러 import.
+//
+// 설계 원칙:
+//   - 마도서는 호출 AI 의 외장 기억. 데이터 모양은 "사용자가 정의한 어휘" 로 유동.
+//   - 고정 스키마 (체중/혈액/인바디 따로) X. metric 하나의 통로로 모든 건강지표 처리.
+//   - 영양제·약·측정·행동 알람은 reminder 하나의 통로로 통합.
 
 export interface RunCtx {
   input: { tool: string; args: Record<string, any> };
@@ -7,175 +12,127 @@ export interface RunCtx {
     get(key: string): Promise<any>;
     set(key: string, value: any): Promise<void>;
     delete(key: string): Promise<boolean>;
-    // 플랫폼 contract: list 결과는 value 까지 포함. list → 각 key get 의 N+1 패턴 금지.
+    // 플랫폼 contract: list 결과는 value 포함. N+1 금지.
     list(prefix?: string, limit?: number): Promise<{ key: string; value: any; updated_at: string }[]>;
   };
 }
 
-// ───── 운동 ─────
-export type Equipment = 'smith' | 'barbell' | 'dumbbell' | 'machine' | 'bodyweight' | 'cardio';
+// ───── Goal (자연어) ─────
+export interface Goal {
+  description: string;
+  set_at: string;     // ISO
+  updated_at: string; // ISO
+}
 
+// ───── 운동 — 루틴 정의 ─────
+export type ExerciseCategory = 'compound' | 'isolation';
+
+export interface ExerciseDef {
+  slug: string;             // snake_case
+  display_name: string;
+  category: ExerciseCategory;
+  current_pr_kg: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ───── 운동 — 세션 기록 ─────
 export interface SetEntry {
-  weight_kg?: number;
-  reps?: number;
-  rir?: number;
-  duration_min?: number;
-  distance_km?: number;
+  weight_kg: number;
+  reps: number;
+  rir?: number; // Reps In Reserve. 모르면 생략
 }
 
-export interface Exercise {
-  name: string;
-  equipment?: Equipment;
-  sets: SetEntry[];
-}
-
-export interface Pain {
-  site: string;
-  severity: number;
-  note?: string;
-}
-
-export interface Session {
+export interface SessionRecord {
   id: string;
-  date: string;
-  exercises: Exercise[];
-  pain?: Pain;
-  condition?: number;
+  exercise_slug: string;
+  sets: SetEntry[];
   note?: string;
-  created_at: string;
+  created_at: string; // ISO
 }
 
-// ───── 체중 ─────
-export type WeightContext = 'fasted' | 'postmeal' | 'postworkout' | 'unknown';
+// ───── 비루틴 활동 (축구·산책·자전거 등) ─────
+export type ActivityIntensity = 'low' | 'moderate' | 'high';
 
-export interface WeightEntry {
-  date: string;
-  time?: string;
-  weight_kg: number;
-  measurement_context: WeightContext;
+export interface ActivityRecord {
+  id: string;
+  name: string;          // 자유 텍스트
+  duration_min?: number;
+  intensity?: ActivityIntensity;
+  distance_km?: number;
   note?: string;
-  created_at: string;
+  performed_at: string;  // ISO
+  created_at: string;    // ISO
 }
 
-// ───── InBody ─────
-export interface InBodyEntry {
-  date: string;
-  weight_kg: number;
-  skeletal_muscle_kg: number;
-  body_fat_kg: number;
-  body_fat_pct: number;
-  bmr_kcal: number;
-  visceral_fat_level?: number;
-  bmi?: number;
-  note?: string;
+// ───── 건강지표 — 정의 ─────
+export type MetricPriority = 'critical' | 'high' | 'normal';
+
+export interface MetricDef {
+  slug: string;
+  display_name: string;
+  unit: string;              // 자유 텍스트 (mg/dL, kg, %, bpm 등)
+  target_min?: number;
+  target_max?: number;
+  priority: MetricPriority;
+  frequency_hint?: string;   // 자유 텍스트 (예: 'daily_morning', 'quarterly')
   created_at: string;
+  updated_at: string;
 }
 
-// ───── 혈액검사 ─────
-export interface BloodPanel {
-  date: string;
-  ldl_mg_dl?: number;
-  hdl_mg_dl?: number;
-  total_cholesterol_mg_dl?: number;
-  triglycerides_mg_dl?: number;
-  uric_acid_mg_dl?: number;
-  vitamin_d_ng_ml?: number;
-  fasting_glucose_mg_dl?: number;
-  hba1c_pct?: number;
+// ───── 건강지표 — 측정 기록 ─────
+export interface MetricRecord {
+  value: number;
+  measured_at: string;       // ISO
+  context?: string;          // 자유 텍스트 (예: 'fasted_morning', 'post_run')
   note?: string;
   created_at: string;
 }
 
 // ───── 식단 ─────
-export type MealSlot = 'breakfast' | 'lunch' | 'dinner' | 'snack';
-export type MealSource = 'user_text' | 'photo_confirmed' | 'ai_recommended_consumed';
-
-export interface MealItem {
-  name: string;
-  estimated_kcal?: number;
+export interface MealRecord {
+  id: string;
+  kcal?: number;
   protein_g?: number;
-  portion_note?: string;
-}
-
-export interface Meal {
-  id: string;
-  date: string;
-  slot: MealSlot;
-  items: MealItem[];
-  source: MealSource;
-  recipe_ref?: string;
-  total_kcal_estimated?: number;
+  carbs_g?: number;
+  fat_g?: number;
+  name?: string;
   note?: string;
+  eaten_at: string;          // ISO
   created_at: string;
 }
 
-// ───── 레시피 ─────
-export interface Recipe {
-  id: string;
-  date: string;
-  name: string;
-  cuisine?: string;
-  source_url: string;
-  ingredients?: string[];
-  primary_protein_g?: number;
-  estimated_kcal?: number;
-  ldl_friendly?: boolean;
-  rationale?: string;
-  created_at: string;
-}
+// ───── Reminder — 영양제·약·측정·행동 통합 알람 ─────
+export type ReminderType = 'supplement' | 'measurement' | 'action';
 
-// ───── 부상 ─────
-export interface InjuryRecord {
-  site: string;
-  started: string;
-  recovered?: string;
-  notes?: string;
-}
-
-// ───── 영양제 / 약 (정기 복용 스케줄) ─────
-//
-// 데이터 키:
-//   supplement:{slug}                — 정의 (고유, upsert)
-//   intake:{date}:{slug}:{HHMM}      — 실제 복용 기록 (한 슬롯 = 한 row)
-//
-// slug 는 영문 snake_case (예: 'vitamin_d', 'omega3', 'magnesium_glycinate').
-// schedule_times 길이 = times_per_day. 각 시간은 "HH:MM" 24시간.
-// every_n_days = 1 매일, 2 격일, 7 주 1회. start_date 부터 계산.
-export interface SupplementSchedule {
+export interface ReminderDef {
   slug: string;
   display_name: string;
-  times_per_day: number;
-  schedule_times: string[];
-  every_n_days?: number;
-  with_meal?: boolean;
-  start_date?: string;
+  schedule_times: string[];  // ['HH:MM', ...]
+  every_n_days: number;      // 1=매일, 2=격일, 7=주1회
+  window_minutes: number;    // 슬롯 ± N분
+  type: ReminderType;
+  notes?: string;            // 자유 메모 — 알림 body 에 첨부
+  start_date?: string;       // YYYY-MM-DD
   end_date?: string;
-  dose_note?: string;
-  notes?: string;
   created_at: string;
   updated_at: string;
 }
 
-export interface SupplementIntake {
+// ───── Reminder — ack 기록 ─────
+export interface ReminderAck {
+  id: string;
   slug: string;
-  date: string;
-  slot: string;
-  taken_at: string;
+  slot_iso: string;          // 매칭된 슬롯의 ISO (윈도우 밖이면 'off_schedule')
   note?: string;
+  acked_at: string;          // ISO
   created_at: string;
 }
 
+// ───── Settings ─────
+// 진짜 필수는 timezone 만. activity_factor 는 식단 칼로리 해석 필요 시 AI 가 합의 후 update.
+// sex / target_weight / PR 등 모두 사라짐 (목표·지표·운동은 사용자가 정의).
 export interface Settings {
-  target_weight_min: number;
-  target_weight_max: number;
-  target_weight_rule: 'always_in_range' | 'fasted_only' | 'daily_average';
-  activity_factor: number;
-  pr_squat_kg: number;
-  pr_bench_press_kg: number;
-  pr_shoulder_press_kg: number;
-  pr_deadlift_kg: number;
-  four_goals: string[];
-  next_blood_panel_target: string;
   timezone: string;
-  supplement_window_minutes: number;
+  activity_factor: number | null;
 }

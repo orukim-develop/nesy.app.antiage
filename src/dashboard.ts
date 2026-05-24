@@ -1,42 +1,48 @@
-// render_dashboard — /board 위젯. SPEC §5.
-// 외부 차트 라이브러리 임포트 금지 (V8 isolate). SVG 직접.
+// render_dashboard — /board 위젯.
+//
+// 구조: 헤더 (goal) + 3축 카드:
+//   1) 운동      — 등록 루틴 + 최근 7일 세션 + 최근 활동
+//   2) 건강지표  — 등록 metric 각각의 최근값·target·trend
+//   3) 식단·알람 — 오늘 식단 누적 + 활성 알람 + 다음 슬롯
+//
+// 외부 라이브러리 임포트 금지 (V8 isolate). 모든 SVG/HTML 직접.
 
-import type { RunCtx, WeightEntry, InBodyEntry, Session, Meal } from './types.ts';
-import { getSettings } from './settings.ts';
+import type { RunCtx } from './types.ts';
 import {
-  loadAllSessions, loadAllWeights, loadAllInBody, loadAllBlood, loadAllMeals,
-  loadInjuryHistory, getActiveInjury,
+  getGoal,
+  loadAllExercises, loadAllSessions, loadAllActivities,
+  loadAllMetrics, loadMetricRecordsFor,
+  loadAllMeals,
+  loadAllReminders, loadAllReminderAcks,
+  findLastSessionFor, bestSet,
 } from './store.ts';
-import { daysBetween, escapeHtml, parseDate, todayIso } from './utils.ts';
+import { getSettings } from './settings.ts';
+import { todayIso, nowMinutesInTz, hhmmToMinutes, daysBetween, escapeHtml } from './utils.ts';
 
-const TRACKED_EXERCISES = ['squat', 'deadlift', 'bench_press', 'shoulder_press'];
-const EX_LABEL: Record<string, string> = {
-  squat: '스쿼트', deadlift: '데드리프트', bench_press: '벤치', shoulder_press: '숄더',
-};
-
-export async function renderDashboard(ctx: RunCtx) {
-  const today = todayIso();
+export async function renderDashboardTool(ctx: RunCtx) {
   const settings = await getSettings(ctx);
+  const tz = settings.timezone;
+  const today = todayIso(tz);
+  const nowMin = nowMinutesInTz(tz);
 
-  const [sessions, weights, inbodyAll, bloodAll, meals, injuryHistory, activeInjury] =
+  const [goal, exercises, sessions, activities, metrics, meals, reminders, reminderAcks] =
     await Promise.all([
+      getGoal(ctx),
+      loadAllExercises(ctx),
       loadAllSessions(ctx),
-      loadAllWeights(ctx),
-      loadAllInBody(ctx),
-      loadAllBlood(ctx),
+      loadAllActivities(ctx),
+      loadAllMetrics(ctx),
       loadAllMeals(ctx),
-      loadInjuryHistory(ctx),
-      getActiveInjury(ctx),
+      loadAllReminders(ctx),
+      loadAllReminderAcks(ctx),
     ]);
 
   const css = buildCss();
   const body =
-    sectionHeader(today, settings, activeInjury) +
-    sectionWeightChart(weights, settings, today, injuryHistory) +
-    sectionInBody(inbodyAll) +
-    sectionExercises(sessions, today, injuryHistory, activeInjury) +
-    sectionBlood(bloodAll, settings, today) +
-    sectionDiet(meals, inbodyAll, settings, today);
+    sectionGoal(goal, today) +
+    (await sectionMetrics(ctx, metrics, today)) +
+    sectionExercise(exercises, sessions, activities, today) +
+    sectionMealsAndReminders(meals, reminders, reminderAcks, today, nowMin, tz);
 
   const html =
     `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><style>${css}</style></head>` +
@@ -52,369 +58,257 @@ function buildCss(): string {
   return `
     * { box-sizing: border-box; }
     body { margin: 0; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1a1a1a; background: #fafafa; }
-    .dashboard { padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .dashboard { padding: 10px; display: grid; grid-template-columns: 1fr; gap: 8px; }
     .card { background: #fff; border: 1px solid #e5e5e5; border-radius: 6px; padding: 10px; }
-    .card.wide { grid-column: 1 / -1; }
     .card h3 { margin: 0 0 6px; font-size: 11px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 0.4px; }
-    .card .num { font-size: 18px; font-weight: 600; }
+    .card .num { font-size: 16px; font-weight: 600; }
     .card .sub { color: #888; font-size: 11px; }
-    .pill { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 10px; margin-right: 4px; font-weight: 500; }
+    .pill { display: inline-block; padding: 1px 6px; border-radius: 9px; font-size: 10px; margin-left: 4px; font-weight: 500; }
     .pill.ok { background: #e7f7ec; color: #1e7a3a; }
     .pill.warn { background: #fff4e0; color: #aa6700; }
     .pill.alert { background: #fde7e7; color: #b51d1d; }
     .pill.info { background: #e8eef9; color: #2752a3; }
+    .pill.muted { background: #eee; color: #777; }
     .row { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
     .row.tight { margin-top: 2px; }
-    .bar { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 11px; }
-    .bar .label { width: 64px; color: #555; }
-    .bar .track { position: relative; flex: 1; height: 10px; background: #eee; border-radius: 5px; overflow: hidden; }
-    .bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: #4f7df0; }
-    .bar .fill.neg { background: #d75858; }
-    .bar .v { width: 56px; text-align: right; color: #333; font-variant-numeric: tabular-nums; }
-    svg .grid { stroke: #ddd; stroke-width: 1; }
-    svg .guideline { stroke: #c3a155; stroke-dasharray: 3 3; stroke-width: 1; }
-    svg .axis { stroke: #999; stroke-width: 1; }
-    svg .axis-text { fill: #888; font-size: 9px; }
+    .row.head { font-weight: 600; color: #444; }
+    .empty { color: #aaa; font-style: italic; font-size: 11px; padding: 6px 0; text-align: center; }
+    .goal-text { font-size: 13px; color: #222; line-height: 1.5; }
+    .goal-empty { color: #b51d1d; font-weight: 600; }
+    .metric-block { padding: 6px 0; border-bottom: 1px dashed #eee; }
+    .metric-block:last-child { border-bottom: none; }
+    .metric-block .meta { font-size: 10px; color: #999; margin-top: 2px; }
+    .axis-text { fill: #888; font-size: 9px; }
+    svg .axis { stroke: #aaa; stroke-width: 1; }
     svg .data-line { stroke: #4f7df0; stroke-width: 1.5; fill: none; }
-    svg .data-area { fill: rgba(79,125,240,0.08); }
-    svg .injury-band { fill: rgba(200,200,200,0.25); }
-    svg .pt-fasted { fill: #4f7df0; }
-    svg .pt-postmeal { fill: #f0904f; }
-    svg .pt-postworkout { fill: #4fa07d; }
-    svg .pt-unknown { fill: #999; }
-    .legend { display: flex; gap: 10px; font-size: 10px; color: #666; margin-top: 4px; }
-    .legend .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
-    .empty { color: #aaa; font-style: italic; font-size: 11px; padding: 8px 0; text-align: center; }
-    .injury-active { color: #b51d1d; font-weight: 600; }
-    .injury-clear { color: #1e7a3a; }
+    svg .target-band { fill: rgba(195,161,85,0.15); }
+    svg .pt { fill: #4f7df0; }
+    .reminder-slot { display: inline-block; padding: 1px 5px; margin: 1px 2px 1px 0; border-radius: 3px; font-size: 10px; font-variant-numeric: tabular-nums; background: #eef; color: #335; }
+    .reminder-slot.acked { background: #e7f7ec; color: #1e7a3a; text-decoration: line-through; }
+    .reminder-slot.overdue { background: #fde7e7; color: #b51d1d; }
+    .axis-label { color: #2752a3; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; }
   `;
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 헤더
+// 1) 헤더 + Goal
 // ─────────────────────────────────────────────────────────────────────
-function sectionHeader(today: string, settings: import('./types.ts').Settings, activeInjury: import('./types.ts').InjuryRecord | null): string {
-  let injuryHtml = `<span class="injury-clear">활성 부상 없음</span>`;
-  if (activeInjury) {
-    const since = daysBetween(activeInjury.started, today);
-    injuryHtml = `<span class="injury-active">⚠ 부상: ${escapeHtml(activeInjury.site)} (${since}일째)</span>`;
+function sectionGoal(goal: { description: string; set_at: string } | null, today: string): string {
+  if (!goal) {
+    return `<div class="card">
+      <h3>${escapeHtml(today)} · 목표</h3>
+      <div class="goal-empty">목표 미설정.</div>
+      <div class="sub">호출 AI 가 "어떤 건강 목표를 갖고 있어?" 묻고 set_goal 호출.</div>
+    </div>`;
   }
-  const targetConfigured = settings.target_weight_min > 0 && settings.target_weight_max > 0;
-  const targetHtml = targetConfigured
-    ? `목표 ${settings.target_weight_min}–${settings.target_weight_max}kg · ${escapeHtml(settings.target_weight_rule)}`
-    : `목표 미설정 (init_user_profile 호출)`;
-  return `<div class="card wide">
-    <div class="row tight">
-      <div><span class="num">${escapeHtml(today)}</span></div>
-      <div class="sub">${targetHtml}</div>
-    </div>
-    <div class="row tight">${injuryHtml}</div>
+  return `<div class="card">
+    <h3>${escapeHtml(today)} · 목표</h3>
+    <div class="goal-text">${escapeHtml(goal.description)}</div>
+    <div class="sub">설정: ${escapeHtml(goal.set_at.slice(0, 10))}</div>
   </div>`;
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 체중 차트 (30일)
+// 2) 건강지표 카드 (각 metric: 최근값·target·30일 trend)
 // ─────────────────────────────────────────────────────────────────────
-function sectionWeightChart(
-  weights: WeightEntry[], settings: import('./types.ts').Settings, today: string,
-  injuryHistory: import('./types.ts').InjuryRecord[],
-): string {
-  const W = 460, H = 140, PAD_L = 28, PAD_R = 8, PAD_T = 8, PAD_B = 18;
-  const chartW = W - PAD_L - PAD_R;
-  const chartH = H - PAD_T - PAD_B;
-
-  const cutoffStart = subtractDays(today, 30);
-  const pts = weights
-    .filter((w) => w.date >= cutoffStart && w.date <= today)
-    .map((w) => ({
-      day: daysBetween(cutoffStart, w.date),
-      kg: w.weight_kg,
-      ctx: w.measurement_context,
-    }))
-    .sort((a, b) => a.day - b.day);
-
-  if (pts.length === 0) {
-    return `<div class="card wide"><h3>체중 추이 (30일)</h3><div class="empty">데이터 없음 — record_weight 호출 필요.</div></div>`;
+async function sectionMetrics(ctx: RunCtx, metrics: import('./types.ts').MetricDef[], today: string): Promise<string> {
+  const header = `<div class="axis-label">건강지표</div>`;
+  if (metrics.length === 0) {
+    return `<div class="card">${header}<h3>등록된 지표 없음</h3>
+      <div class="empty">propose_setup_from_goal → set_metric 으로 등록.</div></div>`;
   }
 
-  // target 미설정 (0/0) 이면 가이드라인/legend 표시 안 함.
-  const targetConfigured = settings.target_weight_min > 0 && settings.target_weight_max > 0;
+  // priority 정렬 (critical → high → normal)
+  const order: Record<string, number> = { critical: 0, high: 1, normal: 2 };
+  const sorted = [...metrics].sort((a, b) => (order[a.priority] ?? 9) - (order[b.priority] ?? 9));
 
-  // Y 축 범위: target range 포함 ± 1kg 여유. target 미설정이면 데이터만 기준.
-  const minKg = targetConfigured
-    ? Math.min(settings.target_weight_min - 1, ...pts.map((p) => p.kg))
-    : Math.min(...pts.map((p) => p.kg)) - 1;
-  const maxKg = targetConfigured
-    ? Math.max(settings.target_weight_max + 1, ...pts.map((p) => p.kg))
-    : Math.max(...pts.map((p) => p.kg)) + 1;
-  const range = Math.max(1, maxKg - minKg);
+  const blocks = await Promise.all(sorted.map(async (m) => {
+    const records = await loadMetricRecordsFor(ctx, m.slug);
+    records.sort((a, b) => b.measured_at.localeCompare(a.measured_at));
+    const latest = records[0];
 
-  const x = (day: number) => PAD_L + (day / 30) * chartW;
-  const y = (kg: number) => PAD_T + (1 - (kg - minKg) / range) * chartH;
-
-  // 부상 밴드 (30일 창 내 부상 기간).
-  let injuryBands = '';
-  for (const inj of injuryHistory) {
-    const start = inj.started;
-    const end = inj.recovered || today;
-    if (end < cutoffStart || start > today) continue;
-    const startDay = Math.max(0, daysBetween(cutoffStart, start));
-    const endDay = Math.min(30, daysBetween(cutoffStart, end));
-    if (endDay < startDay) continue;
-    injuryBands += `<rect class="injury-band" x="${x(startDay)}" y="${PAD_T}" width="${Math.max(2, x(endDay) - x(startDay))}" height="${chartH}"></rect>`;
-  }
-
-  // 가이드라인 (target min/max). target 미설정이면 표시 안 함.
-  const guideMin = targetConfigured
-    ? `<line class="guideline" x1="${PAD_L}" y1="${y(settings.target_weight_min)}" x2="${W - PAD_R}" y2="${y(settings.target_weight_min)}"></line>`
-    : '';
-  const guideMax = targetConfigured
-    ? `<line class="guideline" x1="${PAD_L}" y1="${y(settings.target_weight_max)}" x2="${W - PAD_R}" y2="${y(settings.target_weight_max)}"></line>`
-    : '';
-
-  // 데이터 라인.
-  const polyPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.day).toFixed(1)},${y(p.kg).toFixed(1)}`).join(' ');
-  const dataLine = `<path class="data-line" d="${polyPath}"></path>`;
-  const dataArea = `<path class="data-area" d="${polyPath} L${x(pts[pts.length - 1].day).toFixed(1)},${y(minKg).toFixed(1)} L${x(pts[0].day).toFixed(1)},${y(minKg).toFixed(1)} Z"></path>`;
-
-  // 데이터 점 (context별 색).
-  const dots = pts.map((p) => `<circle class="pt-${p.ctx}" cx="${x(p.day).toFixed(1)}" cy="${y(p.kg).toFixed(1)}" r="2.5"></circle>`).join('');
-
-  // Y 축 레이블. target 미설정이면 데이터 범위만.
-  const yLabelVals = targetConfigured
-    ? [minKg, settings.target_weight_min, settings.target_weight_max, maxKg]
-    : [minKg, (minKg + maxKg) / 2, maxKg];
-  const yLabels = yLabelVals
-    .filter((v, i, arr) => arr.indexOf(v) === i)
-    .map((v) => `<text class="axis-text" x="${PAD_L - 4}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${v.toFixed(1)}</text>`)
-    .join('');
-
-  // X 축 (오늘 기준 0/-15/-30).
-  const xLabels = [0, 15, 30]
-    .map((d) => `<text class="axis-text" x="${x(d).toFixed(1)}" y="${H - 4}" text-anchor="middle">${d === 0 ? '-30d' : d === 30 ? '오늘' : '-15d'}</text>`)
-    .join('');
-
-  return `<div class="card wide">
-    <h3>체중 추이 (30일)</h3>
-    <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-      ${injuryBands}
-      <line class="axis" x1="${PAD_L}" y1="${PAD_T}" x2="${PAD_L}" y2="${H - PAD_B}"></line>
-      <line class="axis" x1="${PAD_L}" y1="${H - PAD_B}" x2="${W - PAD_R}" y2="${H - PAD_B}"></line>
-      ${guideMin}${guideMax}
-      ${dataArea}${dataLine}${dots}
-      ${yLabels}${xLabels}
-    </svg>
-    <div class="legend">
-      <span><span class="dot" style="background:#4f7df0"></span>공복</span>
-      <span><span class="dot" style="background:#f0904f"></span>식후</span>
-      <span><span class="dot" style="background:#4fa07d"></span>운동후</span>
-      ${targetConfigured ? `<span><span class="dot" style="background:#c3a155"></span>목표 ${settings.target_weight_min}–${settings.target_weight_max}</span>` : ''}
-    </div>
-  </div>`;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// InBody
-// ─────────────────────────────────────────────────────────────────────
-function sectionInBody(inbodyAll: InBodyEntry[]): string {
-  const sorted = [...inbodyAll].sort((a, b) => b.date.localeCompare(a.date));
-  const last = sorted[0];
-  const prev = sorted[1];
-  if (!last) {
-    return `<div class="card"><h3>InBody</h3><div class="empty">기록 없음.</div></div>`;
-  }
-  const dateLine = `<div class="sub">${escapeHtml(last.date)}${prev ? ` vs ${escapeHtml(prev.date)}` : ''}</div>`;
-
-  const rows: string[] = [];
-  function row(label: string, cur: number, prevVal: number | null, unit: string, opts?: { betterDirection?: 'up' | 'down' }) {
-    let deltaHtml = '';
-    if (prevVal !== null) {
-      const d = cur - prevVal;
-      const dStr = (d > 0 ? '+' : '') + d.toFixed(1);
-      const isGood = opts?.betterDirection === 'down' ? d < 0 : d > 0;
-      const cls = Math.abs(d) < 0.05 ? 'sub' : isGood ? 'pill ok' : 'pill warn';
-      deltaHtml = `<span class="${cls}">${dStr}${unit}</span>`;
+    let valueHtml = '';
+    let pill = '';
+    if (latest) {
+      let cls = 'pill muted', label = '범위 미설정';
+      if (m.target_min !== undefined || m.target_max !== undefined) {
+        const inRange =
+          (m.target_min === undefined || latest.value >= m.target_min) &&
+          (m.target_max === undefined || latest.value <= m.target_max);
+        cls = inRange ? 'pill ok' : 'pill alert';
+        label = inRange ? '범위 안' : '범위 밖';
+      }
+      pill = `<span class="${cls}">${label}</span>`;
+      valueHtml = `<span class="num">${latest.value}</span> ${escapeHtml(m.unit)} ${pill}`;
+    } else {
+      valueHtml = `<span class="sub">기록 없음</span>`;
     }
-    rows.push(`<div class="row tight"><span>${label}</span><span><span class="num">${cur.toFixed(1)}</span>${unit} ${deltaHtml}</span></div>`);
-  }
-  row('체중', last.weight_kg, prev?.weight_kg ?? null, 'kg', { betterDirection: 'down' });
-  row('골격근', last.skeletal_muscle_kg, prev?.skeletal_muscle_kg ?? null, 'kg', { betterDirection: 'up' });
-  row('체지방', last.body_fat_kg, prev?.body_fat_kg ?? null, 'kg', { betterDirection: 'down' });
-  row('체지방률', last.body_fat_pct, prev?.body_fat_pct ?? null, '%', { betterDirection: 'down' });
-  rows.push(`<div class="row tight"><span class="sub">BMR</span><span><span class="num">${last.bmr_kcal}</span> kcal</span></div>`);
 
-  return `<div class="card"><h3>InBody</h3>${dateLine}${rows.join('')}</div>`;
+    const tRange = formatTargetRange(m.target_min, m.target_max, m.unit);
+    const ageStr = latest ? `${daysBetween(latest.measured_at.slice(0, 10), today)}일 전` : '—';
+    const chart = renderMetricSparkline(records, m.target_min, m.target_max);
+
+    return `<div class="metric-block">
+      <div class="row tight"><span><strong>${escapeHtml(m.display_name)}</strong> <span class="sub">(${escapeHtml(m.priority)})</span></span><span>${valueHtml}</span></div>
+      <div class="meta">target ${tRange} · 마지막 측정 ${ageStr}${latest?.context ? ` · ${escapeHtml(latest.context)}` : ''}</div>
+      ${chart}
+    </div>`;
+  }));
+
+  return `<div class="card">${header}<h3>지표 ${metrics.length}개</h3>${blocks.join('')}</div>`;
+}
+
+function formatTargetRange(tmin: number | undefined, tmax: number | undefined, unit: string): string {
+  if (tmin === undefined && tmax === undefined) return '없음';
+  if (tmin !== undefined && tmax !== undefined) return `${tmin}~${tmax} ${escapeHtml(unit)}`;
+  if (tmin !== undefined) return `≥ ${tmin} ${escapeHtml(unit)}`;
+  return `≤ ${tmax} ${escapeHtml(unit)}`;
+}
+
+function renderMetricSparkline(records: { value: number; measured_at: string }[], tmin?: number, tmax?: number): string {
+  if (records.length < 2) return '';
+  const W = 360, H = 36, PAD = 4;
+  const sorted = [...records].sort((a, b) => a.measured_at.localeCompare(b.measured_at));
+  const vals = sorted.map((r) => r.value);
+  let lo = Math.min(...vals);
+  let hi = Math.max(...vals);
+  if (tmin !== undefined) lo = Math.min(lo, tmin);
+  if (tmax !== undefined) hi = Math.max(hi, tmax);
+  const range = Math.max(0.1, hi - lo);
+  const x = (i: number) => PAD + (i / (sorted.length - 1)) * (W - PAD * 2);
+  const y = (v: number) => PAD + (1 - (v - lo) / range) * (H - PAD * 2);
+
+  let band = '';
+  if (tmin !== undefined && tmax !== undefined) {
+    band = `<rect class="target-band" x="${PAD}" y="${y(tmax).toFixed(1)}" width="${W - PAD * 2}" height="${(y(tmin) - y(tmax)).toFixed(1)}"></rect>`;
+  }
+  const path = sorted.map((r, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(r.value).toFixed(1)}`).join(' ');
+  const dots = sorted.map((r, i) => `<circle class="pt" cx="${x(i).toFixed(1)}" cy="${y(r.value).toFixed(1)}" r="1.8"></circle>`).join('');
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;margin-top:3px">${band}<path class="data-line" d="${path}"></path>${dots}</svg>`;
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 운동 누적 (4 운동, 최근 4주 top set)
+// 3) 운동 카드 — 루틴 운동 + 최근 7일 세션 + 최근 활동
 // ─────────────────────────────────────────────────────────────────────
-function sectionExercises(
-  sessions: Session[], today: string,
-  injuryHistory: import('./types.ts').InjuryRecord[], activeInjury: import('./types.ts').InjuryRecord | null,
+function sectionExercise(
+  exercises: import('./types.ts').ExerciseDef[],
+  sessions: import('./types.ts').SessionRecord[],
+  activities: import('./types.ts').ActivityRecord[],
+  today: string,
 ): string {
-  const W = 460, H = 110, PAD_L = 28, PAD_R = 8, PAD_T = 6, PAD_B = 16;
-  const chartW = W - PAD_L - PAD_R;
-  const chartH = H - PAD_T - PAD_B;
-  const days = 28;
-  const cutoff = subtractDays(today, days);
+  const header = `<div class="axis-label">운동</div>`;
+  const rows: string[] = [];
 
-  // 각 운동의 top set 시계열.
-  const series: Record<string, { day: number; top: number; date: string }[]> = {};
-  for (const name of TRACKED_EXERCISES) series[name] = [];
-  for (const s of sessions) {
-    if (s.date < cutoff || s.date > today) continue;
-    for (const ex of s.exercises) {
-      if (!series[ex.name]) continue;
-      let top = -Infinity;
-      for (const set of ex.sets) {
-        if (set.weight_kg !== undefined && set.weight_kg > top) top = set.weight_kg;
-      }
-      if (top > -Infinity) {
-        series[ex.name].push({ day: daysBetween(cutoff, s.date), top, date: s.date });
-      }
+  if (exercises.length === 0) {
+    rows.push(`<div class="empty">루틴 운동 미등록.</div>`);
+  } else {
+    rows.push(`<div class="row tight head"><span>루틴 운동 ${exercises.length}개</span><span>마지막 top set</span></div>`);
+    for (const e of exercises) {
+      const last = findLastSessionFor(sessions, e.slug);
+      const top = last ? bestSet(last.sets) : null;
+      const ageDays = last ? daysBetween(last.created_at.slice(0, 10), today) : null;
+      const topHtml = top
+        ? `${top.weight_kg}kg × ${top.reps}${top.rir !== undefined ? ` (RIR ${top.rir})` : ''} <span class="sub">${ageDays}일 전</span>`
+        : `<span class="sub">기록 없음</span>`;
+      const prHtml = e.current_pr_kg !== null ? `<span class="pill info">PR ${e.current_pr_kg}kg</span>` : '';
+      rows.push(`<div class="row tight"><span>${escapeHtml(e.display_name)} ${prHtml}</span><span>${topHtml}</span></div>`);
     }
   }
 
-  const allTops = Object.values(series).flat().map((p) => p.top);
-  if (allTops.length === 0) {
-    return `<div class="card wide"><h3>운동 (4주 top set)</h3><div class="empty">최근 4주 기록 없음.</div></div>`;
-  }
-  const minKg = Math.max(0, Math.min(...allTops) - 5);
-  const maxKg = Math.max(...allTops) + 5;
-  const range = Math.max(1, maxKg - minKg);
-  const x = (d: number) => PAD_L + (d / days) * chartW;
-  const y = (kg: number) => PAD_T + (1 - (kg - minKg) / range) * chartH;
-
-  // 부상 밴드.
-  let injuryBands = '';
-  const bandsSource = [...injuryHistory];
-  if (activeInjury) bandsSource.push(activeInjury);
-  for (const inj of bandsSource) {
-    const start = inj.started;
-    const end = inj.recovered || today;
-    if (end < cutoff || start > today) continue;
-    const sd = Math.max(0, daysBetween(cutoff, start));
-    const ed = Math.min(days, daysBetween(cutoff, end));
-    if (ed < sd) continue;
-    injuryBands += `<rect class="injury-band" x="${x(sd)}" y="${PAD_T}" width="${Math.max(2, x(ed) - x(sd))}" height="${chartH}"></rect>`;
+  // 최근 7일 비루틴 활동
+  const cutoff7 = subtractDaysIso(today, 7);
+  const recentAct = activities
+    .filter((a) => a.performed_at.slice(0, 10) >= cutoff7)
+    .sort((a, b) => b.performed_at.localeCompare(a.performed_at))
+    .slice(0, 7);
+  if (recentAct.length > 0) {
+    rows.push(`<div class="row tight head" style="margin-top:8px"><span>최근 활동</span><span></span></div>`);
+    for (const a of recentAct) {
+      const d = a.performed_at.slice(0, 10);
+      const ageDays = daysBetween(d, today);
+      const meta = [
+        a.duration_min ? `${a.duration_min}분` : null,
+        a.intensity ? a.intensity : null,
+        a.distance_km ? `${a.distance_km}km` : null,
+      ].filter(Boolean).join(' · ');
+      rows.push(`<div class="row tight"><span>${escapeHtml(a.name)}${meta ? ` <span class="sub">(${meta})</span>` : ''}</span><span class="sub">${ageDays === 0 ? '오늘' : `${ageDays}일 전`}</span></div>`);
+    }
   }
 
-  const colors: Record<string, string> = {
-    squat: '#4f7df0', deadlift: '#d75858', bench_press: '#4fa07d', shoulder_press: '#c3a155',
-  };
-  let lines = '';
-  let legend = '';
-  for (const name of TRACKED_EXERCISES) {
-    const pts = series[name].sort((a, b) => a.day - b.day);
-    if (pts.length === 0) continue;
-    const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.day).toFixed(1)},${y(p.top).toFixed(1)}`).join(' ');
-    lines += `<path d="${path}" fill="none" stroke="${colors[name]}" stroke-width="1.5"></path>`;
-    lines += pts.map((p) => `<circle cx="${x(p.day).toFixed(1)}" cy="${y(p.top).toFixed(1)}" r="2" fill="${colors[name]}"></circle>`).join('');
-    const lastTop = pts[pts.length - 1].top;
-    legend += `<span><span class="dot" style="background:${colors[name]}"></span>${EX_LABEL[name]} ${lastTop}kg</span>`;
-  }
-
-  const yLabels = [minKg, (minKg + maxKg) / 2, maxKg]
-    .map((v) => `<text class="axis-text" x="${PAD_L - 4}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${v.toFixed(0)}</text>`)
-    .join('');
-
-  return `<div class="card wide">
-    <h3>운동 top set (4주)</h3>
-    <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-      ${injuryBands}
-      <line class="axis" x1="${PAD_L}" y1="${PAD_T}" x2="${PAD_L}" y2="${H - PAD_B}"></line>
-      <line class="axis" x1="${PAD_L}" y1="${H - PAD_B}" x2="${W - PAD_R}" y2="${H - PAD_B}"></line>
-      ${lines}${yLabels}
-      <text class="axis-text" x="${PAD_L}" y="${H - 4}" text-anchor="start">-28d</text>
-      <text class="axis-text" x="${W - PAD_R}" y="${H - 4}" text-anchor="end">오늘</text>
-    </svg>
-    <div class="legend">${legend}</div>
-  </div>`;
+  return `<div class="card">${header}<h3>운동 · 활동</h3>${rows.join('')}</div>`;
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 혈액검사
+// 4) 식단·알람 카드 — 오늘 식단 + 활성 알람 + 다음 슬롯
 // ─────────────────────────────────────────────────────────────────────
-function sectionBlood(bloodAll: import('./types.ts').BloodPanel[], settings: import('./types.ts').Settings, today: string): string {
-  const sorted = [...bloodAll].sort((a, b) => b.date.localeCompare(a.date));
-  const last = sorted[0];
-  const dueText = settings.next_blood_panel_target?.trim() || '미정';
-  if (!last) {
-    return `<div class="card"><h3>혈액검사</h3><div class="empty">기록 없음.</div><div class="sub">다음 예정: ${escapeHtml(dueText)}</div></div>`;
-  }
+function sectionMealsAndReminders(
+  meals: import('./types.ts').MealRecord[],
+  reminders: import('./types.ts').ReminderDef[],
+  reminderAcks: import('./types.ts').ReminderAck[],
+  today: string,
+  nowMin: number,
+  tz: string,
+): string {
+  const header = `<div class="axis-label">식단 · 알람</div>`;
   const rows: string[] = [];
-  function row(label: string, value: number | undefined, unit: string, flagFn?: (v: number) => 'ok' | 'warn' | 'alert') {
-    if (value === undefined) return;
-    const cls = flagFn ? flagFn(value) : 'ok';
-    rows.push(`<div class="row tight"><span>${label}</span><span><span class="num">${value}</span> ${unit} <span class="pill ${cls}">${cls === 'ok' ? '정상' : cls === 'warn' ? '경계' : '높음/결핍'}</span></span></div>`);
-  }
-  row('LDL', last.ldl_mg_dl, 'mg/dL', (v) => v >= 160 ? 'alert' : v >= 130 ? 'warn' : 'ok');
-  row('HDL', last.hdl_mg_dl, 'mg/dL', (v) => v < 40 ? 'alert' : 'ok');
-  row('요산', last.uric_acid_mg_dl, 'mg/dL', (v) => v >= 7.0 ? 'alert' : 'ok');
-  row('비타민D', last.vitamin_d_ng_ml, 'ng/mL', (v) => v < 20 ? 'alert' : v < 30 ? 'warn' : 'ok');
-  row('공복혈당', last.fasting_glucose_mg_dl, 'mg/dL', (v) => v >= 126 ? 'alert' : v >= 100 ? 'warn' : 'ok');
-  row('HbA1c', last.hba1c_pct, '%', (v) => v >= 6.5 ? 'alert' : v >= 5.7 ? 'warn' : 'ok');
 
-  return `<div class="card"><h3>혈액검사</h3>
-    <div class="sub">${escapeHtml(last.date)}</div>
-    ${rows.join('')}
-    <div class="sub" style="margin-top:6px">다음 예정: ${escapeHtml(dueText)}</div>
-  </div>`;
+  // 오늘 식단 누적
+  const todayMeals = meals.filter((m) => m.eaten_at.slice(0, 10) === today);
+  const kcal = sumOpt(todayMeals.map((m) => m.kcal));
+  const protein = sumOpt(todayMeals.map((m) => m.protein_g));
+  const carbs = sumOpt(todayMeals.map((m) => m.carbs_g));
+  const fat = sumOpt(todayMeals.map((m) => m.fat_g));
+
+  rows.push(`<div class="row tight head"><span>오늘 식단 (${todayMeals.length}끼)</span><span></span></div>`);
+  if (todayMeals.length === 0) {
+    rows.push(`<div class="empty">기록 없음.</div>`);
+  } else {
+    rows.push(`<div class="row tight"><span>칼로리</span><span><span class="num">${kcal ?? '—'}</span> kcal</span></div>`);
+    rows.push(`<div class="row tight"><span>단백질 / 탄수 / 지방</span><span>${protein ?? '—'} / ${carbs ?? '—'} / ${fat ?? '—'} g</span></div>`);
+  }
+
+  // 알람
+  const activeReminders = reminders.filter((r) => !r.end_date || r.end_date >= today);
+  const todayAcks = reminderAcks.filter((a) => a.acked_at.slice(0, 10) === today);
+  const ackKey = (slug: string, slot: string) => `${slug}@${today}T${slot}:00`;
+  const ackedSet = new Set(todayAcks.map((a) => `${a.slug}@${a.slot_iso}`));
+
+  rows.push(`<div class="row tight head" style="margin-top:8px"><span>알람 ${activeReminders.length}개 (tz ${escapeHtml(tz)})</span><span></span></div>`);
+  if (activeReminders.length === 0) {
+    rows.push(`<div class="empty">활성 알람 없음.</div>`);
+  } else {
+    const sorted = [...activeReminders].sort((a, b) => a.schedule_times[0].localeCompare(b.schedule_times[0]));
+    for (const r of sorted) {
+      const slotsHtml = r.schedule_times.map((s) => {
+        const slotMin = hhmmToMinutes(s);
+        const acked = ackedSet.has(ackKey(r.slug, s));
+        const overdue = !acked && nowMin > slotMin + r.window_minutes;
+        const cls = acked ? 'reminder-slot acked' : overdue ? 'reminder-slot overdue' : 'reminder-slot';
+        return `<span class="${cls}">${s}</span>`;
+      }).join('');
+      const typeLabel = r.type === 'supplement' ? '복용' : r.type === 'measurement' ? '측정' : '실행';
+      rows.push(`<div class="row tight"><span>${escapeHtml(r.display_name)} <span class="sub">[${typeLabel}]</span></span><span>${slotsHtml}</span></div>`);
+    }
+  }
+
+  return `<div class="card">${header}<h3>오늘 식단 · 알람</h3>${rows.join('')}</div>`;
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 식단 (7일 평균)
+// 로컬 유틸
 // ─────────────────────────────────────────────────────────────────────
-function sectionDiet(meals: Meal[], inbodyAll: InBodyEntry[], settings: import('./types.ts').Settings, today: string): string {
-  const cutoff = subtractDays(today, 7);
-  const window = meals.filter((m) => m.date >= cutoff && m.date <= today);
-  if (window.length === 0) {
-    return `<div class="card wide"><h3>식단 (7일 평균)</h3><div class="empty">최근 7일 기록 없음.</div></div>`;
-  }
-  const byDay: Record<string, { kcal: number; protein: number }> = {};
-  for (const m of window) {
-    if (!byDay[m.date]) byDay[m.date] = { kcal: 0, protein: 0 };
-    byDay[m.date].kcal += typeof m.total_kcal_estimated === 'number'
-      ? m.total_kcal_estimated
-      : m.items.reduce((s, it) => s + (it.estimated_kcal || 0), 0);
-    byDay[m.date].protein += m.items.reduce((s, it) => s + (it.protein_g || 0), 0);
-  }
-  const days = Object.keys(byDay).length;
-  const avgKcal = Math.round(Object.values(byDay).reduce((s, v) => s + v.kcal, 0) / days);
-  const avgProtein = Number((Object.values(byDay).reduce((s, v) => s + v.protein, 0) / days).toFixed(1));
-
-  const inbody = [...inbodyAll].sort((a, b) => b.date.localeCompare(a.date))[0];
-  let maintLine = '';
-  let statusPill = '';
-  if (inbody) {
-    const af = settings.activity_factor;
-    const mn = Math.round(inbody.bmr_kcal * (af - 0.05));
-    const mx = Math.round(inbody.bmr_kcal * (af + 0.05));
-    maintLine = `<div class="sub">유지 추정 ${mn}–${mx} kcal (BMR ${inbody.bmr_kcal} × ${af})</div>`;
-    let cls = 'pill info', label = '유지';
-    if (avgKcal < mn - 150) { cls = 'pill warn'; label = 'deficit'; }
-    else if (avgKcal < mn) { cls = 'pill info'; label = 'slight deficit'; }
-    else if (avgKcal > mx + 150) { cls = 'pill alert'; label = 'surplus'; }
-    else if (avgKcal > mx) { cls = 'pill warn'; label = 'slight surplus'; }
-    statusPill = `<span class="${cls}">${label}</span>`;
-  }
-
-  return `<div class="card wide"><h3>식단 (7일 평균, ${days}일치)</h3>
-    <div class="row tight"><span>평균 칼로리</span><span><span class="num">${avgKcal}</span> kcal ${statusPill}</span></div>
-    <div class="row tight"><span>평균 단백질</span><span><span class="num">${avgProtein}</span> g</span></div>
-    ${maintLine}
-  </div>`;
+function sumOpt(arr: (number | undefined)[]): number | null {
+  const f = arr.filter((x): x is number => typeof x === 'number');
+  if (f.length === 0) return null;
+  return Number(f.reduce((s, x) => s + x, 0).toFixed(1));
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// 유틸 (모듈 로컬)
-// ─────────────────────────────────────────────────────────────────────
-function subtractDays(iso: string, days: number): string {
-  const d = parseDate(iso);
-  d.setUTCDate(d.getUTCDate() - days);
-  const yy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
+function subtractDaysIso(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - days);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
   return `${yy}-${mm}-${dd}`;
 }

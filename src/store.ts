@@ -1,25 +1,23 @@
-// 키 네임스페이스 (SPEC §7 + 영양제 확장)
-//   session:{date}:{uuid}            — 운동 세션
-//   weight:{date}:{HHMM}             — 체중 측정
-//   inbody:{date}                    — InBody (날짜당 1개)
-//   blood:{date}                     — 혈액검사 (날짜당 1개)
-//   meal:{date}:{slot}:{uuid}        — 식단
-//   recipe:{date}:{uuid}             — AI 추천 레시피
-//   injury:active                    — 현재 활성 부상 (없으면 null)
-//   injury:history:{started_date}    — 과거 부상 이력
-//   supplement:{slug}                — 영양제·약 정기 복용 정의 (upsert)
-//   intake:{date}:{slug}:{HHMM}      — 실제 복용 기록 (한 슬롯 = 한 row)
+// 키 네임스페이스 (단일 통로 위주):
+//   __goal                              — 사용자 자연어 목표 단일 객체
+//   __settings                          — timezone 등 단일 객체
+//   exercise:{slug}                     — 루틴 운동 정의
+//   session:{ISO}                       — 루틴 세션 기록
+//   activity:{ISO}                      — 비루틴 활동 (축구·산책·자전거 등)
+//   metric:{slug}                       — 건강지표 정의
+//   metric_record:{slug}:{ISO}          — 건강지표 측정 기록
+//   meal:{ISO}                          — 식단 한 끼
+//   reminder:{slug}                     — 알람 정의 (영양제·약·측정·행동 통합)
+//   reminder_ack:{ISO}                  — 알람 응답 기록
+//   notif_sent:{slug}:{slot_iso}        — Push 발송 마킹 (워커 내부 한 번만 정책)
 
 import type {
-  RunCtx, Session, WeightEntry, InBodyEntry, BloodPanel, Meal, Recipe, InjuryRecord,
-  SupplementSchedule, SupplementIntake,
+  RunCtx, Goal, ExerciseDef, SessionRecord, ActivityRecord,
+  MetricDef, MetricRecord, MealRecord, ReminderDef, ReminderAck,
 } from './types.ts';
 import { listAllRows } from './utils.ts';
 
-export const KEY_INJURY_ACTIVE = 'injury:active';
-
-// list 결과의 value 를 그대로 사용 — N+1 금지 (플랫폼 contract).
-// 백엔드가 value 를 안 채워 보낸 row 가 있으면 그 row 만 fallback get.
+// list 결과 그대로 사용. value 누락된 row 만 fallback get.
 export async function loadAll<T>(ctx: RunCtx, prefix: string): Promise<T[]> {
   const rows = await listAllRows(ctx.data, prefix);
   const out: T[] = [];
@@ -35,61 +33,64 @@ export async function loadAll<T>(ctx: RunCtx, prefix: string): Promise<T[]> {
   return out;
 }
 
-export const loadAllSessions = (ctx: RunCtx) => loadAll<Session>(ctx, 'session:');
-export const loadAllWeights = (ctx: RunCtx) => loadAll<WeightEntry>(ctx, 'weight:');
-export const loadAllInBody = (ctx: RunCtx) => loadAll<InBodyEntry>(ctx, 'inbody:');
-export const loadAllBlood = (ctx: RunCtx) => loadAll<BloodPanel>(ctx, 'blood:');
-export const loadAllMeals = (ctx: RunCtx) => loadAll<Meal>(ctx, 'meal:');
-export const loadAllRecipes = (ctx: RunCtx) => loadAll<Recipe>(ctx, 'recipe:');
-export const loadInjuryHistory = (ctx: RunCtx) => loadAll<InjuryRecord>(ctx, 'injury:history:');
-export const loadAllSupplements = (ctx: RunCtx) => loadAll<SupplementSchedule>(ctx, 'supplement:');
+// ───── Goal (단일) ─────
+export const KEY_GOAL = '__goal';
+export const getGoal = (ctx: RunCtx) => ctx.data.get(KEY_GOAL) as Promise<Goal | null>;
+export const setGoal = (ctx: RunCtx, g: Goal) => ctx.data.set(KEY_GOAL, g);
 
-// 특정 날짜의 모든 복용 기록 한 번에. 7일 윈도우는 호출자가 여러 번 또는 더 넓은 prefix 호출.
-export const loadIntakesForDate = (ctx: RunCtx, date: string) =>
-  loadAll<SupplementIntake>(ctx, `intake:${date}:`);
+// ───── Exercise 정의 ─────
+export const exerciseKey = (slug: string) => `exercise:${slug}`;
+export const getExercise = (ctx: RunCtx, slug: string) => ctx.data.get(exerciseKey(slug)) as Promise<ExerciseDef | null>;
+export const setExercise = (ctx: RunCtx, def: ExerciseDef) => ctx.data.set(exerciseKey(def.slug), def);
+export const deleteExercise = (ctx: RunCtx, slug: string) => ctx.data.delete(exerciseKey(slug));
+export const loadAllExercises = (ctx: RunCtx) => loadAll<ExerciseDef>(ctx, 'exercise:');
 
-// 키 prefix 가 'intake:' 인 모든 row — get_state 의 7일 순응도 계산용. 백엔드 페이징은 listAllRows 가 책임.
-export const loadAllIntakes = (ctx: RunCtx) => loadAll<SupplementIntake>(ctx, 'intake:');
+// ───── Session ─────
+export const loadAllSessions = (ctx: RunCtx) => loadAll<SessionRecord>(ctx, 'session:');
 
-export async function getActiveInjury(ctx: RunCtx): Promise<InjuryRecord | null> {
-  return ((await ctx.data.get(KEY_INJURY_ACTIVE)) as InjuryRecord | null) ?? null;
+// 같은 운동 직전 세션 — created_at 내림차순 정렬 후 최상위.
+export function findLastSessionFor(sessions: SessionRecord[], slug: string): SessionRecord | null {
+  const matched = sessions.filter((s) => s.exercise_slug === slug);
+  if (matched.length === 0) return null;
+  matched.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  return matched[0];
 }
 
-export async function setActiveInjury(ctx: RunCtx, injury: InjuryRecord | null): Promise<void> {
-  if (injury) await ctx.data.set(KEY_INJURY_ACTIVE, injury);
-  else await ctx.data.delete(KEY_INJURY_ACTIVE);
+// best set = max(weight_kg). 동률이면 reps 큰 거.
+export function bestSet(sets: { weight_kg: number; reps: number; rir?: number }[]) {
+  if (sets.length === 0) return null;
+  return [...sets].sort((a, b) => {
+    if (b.weight_kg !== a.weight_kg) return b.weight_kg - a.weight_kg;
+    return b.reps - a.reps;
+  })[0];
 }
 
-// 같은 운동의 직전 세션을 찾는다 (date 내림차순). 같은 날짜 여러 세션이면 가장 마지막 created_at.
-export function findLastSession(
-  sessions: Session[],
-  exerciseName: string,
-): { session: Session; exercise: import('./types.ts').Exercise } | null {
-  const matches = sessions
-    .map((s) => {
-      const ex = s.exercises.find((e) => e.name === exerciseName);
-      return ex ? { session: s, exercise: ex } : null;
-    })
-    .filter((x): x is { session: Session; exercise: import('./types.ts').Exercise } => x !== null)
-    .sort((a, b) => {
-      const d = b.session.date.localeCompare(a.session.date);
-      if (d !== 0) return d;
-      return (b.session.created_at || '').localeCompare(a.session.created_at || '');
-    });
-  return matches[0] || null;
-}
+// ───── Activity ─────
+export const loadAllActivities = (ctx: RunCtx) => loadAll<ActivityRecord>(ctx, 'activity:');
 
-// 부상 부위와 운동 충돌 매핑. SPEC §3.1 의 warnings 조건과 compute_next_load 의 phase 판정에 공통 사용.
-const INJURY_CONFLICT_MAP: Record<string, string[]> = {
-  lower_back: ['squat', 'deadlift', 'good_morning', 'bent_over_row', 'romanian_deadlift'],
-  knee: ['squat', 'lunge', 'leg_press', 'leg_extension', 'running_km', 'bulgarian_split_squat'],
-  shoulder: ['bench_press', 'shoulder_press', 'overhead_press', 'incline_press', 'lateral_raise'],
-  elbow: ['bench_press', 'shoulder_press', 'pullup', 'chinup', 'curl', 'tricep_extension'],
-  wrist: ['bench_press', 'shoulder_press', 'pushup'],
-};
+// ───── Metric ─────
+export const metricKey = (slug: string) => `metric:${slug}`;
+export const getMetric = (ctx: RunCtx, slug: string) => ctx.data.get(metricKey(slug)) as Promise<MetricDef | null>;
+export const setMetric = (ctx: RunCtx, def: MetricDef) => ctx.data.set(metricKey(def.slug), def);
+export const deleteMetric = (ctx: RunCtx, slug: string) => ctx.data.delete(metricKey(slug));
+export const loadAllMetrics = (ctx: RunCtx) => loadAll<MetricDef>(ctx, 'metric:');
 
-export function exerciseConflictsWithInjurySite(exerciseName: string, site: string): boolean {
-  const list = INJURY_CONFLICT_MAP[site];
-  if (!list) return false;
-  return list.includes(exerciseName);
-}
+// metric 기록 prefix: `metric_record:${slug}:`
+export const metricRecordPrefix = (slug: string) => `metric_record:${slug}:`;
+export const loadMetricRecordsFor = (ctx: RunCtx, slug: string) =>
+  loadAll<MetricRecord>(ctx, metricRecordPrefix(slug));
+
+// ───── Meal ─────
+export const loadAllMeals = (ctx: RunCtx) => loadAll<MealRecord>(ctx, 'meal:');
+
+// ───── Reminder ─────
+export const reminderKey = (slug: string) => `reminder:${slug}`;
+export const getReminder = (ctx: RunCtx, slug: string) => ctx.data.get(reminderKey(slug)) as Promise<ReminderDef | null>;
+export const setReminder = (ctx: RunCtx, def: ReminderDef) => ctx.data.set(reminderKey(def.slug), def);
+export const deleteReminder = (ctx: RunCtx, slug: string) => ctx.data.delete(reminderKey(slug));
+export const loadAllReminders = (ctx: RunCtx) => loadAll<ReminderDef>(ctx, 'reminder:');
+
+export const loadAllReminderAcks = (ctx: RunCtx) => loadAll<ReminderAck>(ctx, 'reminder_ack:');
+
+// ───── Notif 마킹 (워커 내부) ─────
+export const notifSentKey = (slug: string, slotIso: string) => `notif_sent:${slug}:${slotIso}`;

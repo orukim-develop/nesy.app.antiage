@@ -1,10 +1,11 @@
 {
-  "name": "nesy.app.getmuscle",
-  "version": "0.1.0",
+  "name": "nesy.app.health",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "smoke": "node --experimental-strip-types src/test/onboarding.smoke.ts && node --experimental-strip-types src/test/session.smoke.ts && node --experimental-strip-types src/test/activity.smoke.ts && node --experimental-strip-types src/test/compute_next_load.smoke.ts && node --experimental-strip-types src/test/metric.smoke.ts && node --experimental-strip-types src/test/meal.smoke.ts && node --experimental-strip-types src/test/reminder.smoke.ts && node --experimental-strip-types src/test/notifications.smoke.ts && node --experimental-strip-types src/test/dashboard.smoke.ts"
   },
   "dependencies": {}
 }

@@ -1,442 +1,325 @@
-// get_state — 사용자 현재 상태 종합 스냅샷. SPEC §3.7.
-// 호출 AI 가 운동·식단·체중 추천 전에 반드시 부르도록 description 에 박혀 있음.
+// get_state — 마도서의 심장.
+//
+// 호출 AI 가 추천 / 응답 / 알림 해석 전에 무조건 먼저 부른다.
+// 빈 추론 → 사실 기반 응답 으로 강제하는 통로.
+//
+// 반환 구조 (요약):
+//   - goal              : 사용자 자연어 목표 (없으면 null)
+//   - exercises         : 등록 루틴 운동 + last_session
+//   - recent_sessions   : 최근 7개 세션
+//   - recent_activities : 최근 7개 비루틴 활동
+//   - metrics           : 등록 지표 + latest_value + in_target_range
+//   - meals_today       : 오늘 식단 + 누적 + (조건부) maintenance 추정
+//   - reminders         : 활성 알람 + 오늘 ack 카운트 + next_slot_due
+//   - settings          : timezone / activity_factor
+//   - missing_setup     : goal/metrics/exercises/reminders 비어있음 진단
+//   - stale_records     : 14일 이상 측정 없는 지표
+//   - meta              : AI 행동 규약 (must/should_not/next_action)
 
-import type {
-  RunCtx, Session, WeightEntry, InBodyEntry, BloodPanel, Meal,
-  SupplementSchedule, SupplementIntake,
-} from './types.ts';
-import { getSettings } from './settings.ts';
+import type { RunCtx, ExerciseDef, MetricDef, ReminderDef } from './types.ts';
 import {
-  loadAllSessions, loadAllWeights, loadAllInBody, loadAllBlood, loadAllMeals,
-  loadInjuryHistory, getActiveInjury, findLastSession,
-  loadAllSupplements, loadAllIntakes,
+  getGoal,
+  loadAllExercises, loadAllSessions, loadAllActivities,
+  loadAllMetrics, loadMetricRecordsFor,
+  loadAllMeals,
+  loadAllReminders, loadAllReminderAcks,
+  findLastSessionFor, bestSet,
 } from './store.ts';
-import { daysBetween, todayIso } from './utils.ts';
-import { timeToKey, timeToMinutes, nowInTz, daysSinceIso } from './supplements/common.ts';
-import { REQUIRED_PROFILE_KEYS, isMissingValue } from './init_user_profile.ts';
+import { getSettings } from './settings.ts';
+import { todayIso, nowMinutesInTz, hhmmToMinutes, daysBetween } from './utils.ts';
 
-const TRACKED_EXERCISES = ['squat', 'deadlift', 'bench_press', 'shoulder_press'];
+const STALE_DAYS = 14;
 
-export async function getState(ctx: RunCtx) {
-  const today = todayIso();
+export async function getStateTool(ctx: RunCtx) {
   const settings = await getSettings(ctx);
+  const tz = settings.timezone;
+  const today = todayIso(tz);
+  const nowMin = nowMinutesInTz(tz);
 
-  const [sessions, weights, inbodyAll, bloodAll, meals, injuryHistory, activeInjury, supps, allIntakes] =
+  const [goal, exercises, sessions, activities, metrics, meals, reminders, reminderAcks] =
     await Promise.all([
+      getGoal(ctx),
+      loadAllExercises(ctx),
       loadAllSessions(ctx),
-      loadAllWeights(ctx),
-      loadAllInBody(ctx),
-      loadAllBlood(ctx),
+      loadAllActivities(ctx),
+      loadAllMetrics(ctx),
       loadAllMeals(ctx),
-      loadInjuryHistory(ctx),
-      getActiveInjury(ctx),
-      loadAllSupplements(ctx),
-      loadAllIntakes(ctx),
+      loadAllReminders(ctx),
+      loadAllReminderAcks(ctx),
     ]);
 
-  // ───── weight 섹션 ─────
-  const weightSorted = [...weights].sort((a, b) => sortByDateTime(b, a));
-  const lastWeight = weightSorted[0] || null;
-  const last7 = recentDays(weights, today, 7);
-  const last7Avg = avg(last7.map((w) => w.weight_kg));
-  // target 미설정 (0/0) 이면 in_range 자체가 의미 없음 → null.
-  const targetConfigured =
-    settings.target_weight_min > 0 && settings.target_weight_max > 0;
-  const inRange = lastWeight && targetConfigured
-    ? lastWeight.weight_kg >= settings.target_weight_min &&
-      lastWeight.weight_kg <= settings.target_weight_max
-    : null;
-  const trend30 = trendOver(weights, today, 30);
-
-  // ───── InBody 섹션 ─────
-  const inbodySorted = [...inbodyAll].sort((a, b) => b.date.localeCompare(a.date));
-  const lastInBody = inbodySorted[0] || null;
-  const prevInBody = inbodySorted[1] || null;
-  const inbodySection = lastInBody
-    ? {
-        date: lastInBody.date,
-        weight_kg: lastInBody.weight_kg,
-        skeletal_muscle_kg: lastInBody.skeletal_muscle_kg,
-        body_fat_kg: lastInBody.body_fat_kg,
-        body_fat_pct: lastInBody.body_fat_pct,
-        bmr_kcal: lastInBody.bmr_kcal,
-        vs_previous: prevInBody
-          ? {
-              date: prevInBody.date,
-              skeletal_muscle_kg_delta: round2(lastInBody.skeletal_muscle_kg - prevInBody.skeletal_muscle_kg),
-              body_fat_kg_delta: round2(lastInBody.body_fat_kg - prevInBody.body_fat_kg),
-              body_fat_pct_delta: round2(lastInBody.body_fat_pct - prevInBody.body_fat_pct),
-            }
-          : null,
-      }
-    : null;
-
-  // ───── 혈액 섹션 ─────
-  const bloodSorted = [...bloodAll].sort((a, b) => b.date.localeCompare(a.date));
-  const lastBlood = bloodSorted[0] || null;
-  let bloodSection: any = null;
-  if (lastBlood) {
-    const flags = computeFlagsFromBlood(lastBlood);
-    bloodSection = {
-      date: lastBlood.date,
-      ldl_mg_dl: lastBlood.ldl_mg_dl,
-      hdl_mg_dl: lastBlood.hdl_mg_dl,
-      uric_acid_mg_dl: lastBlood.uric_acid_mg_dl,
-      vitamin_d_ng_ml: lastBlood.vitamin_d_ng_ml,
-      fasting_glucose_mg_dl: lastBlood.fasting_glucose_mg_dl,
-      hba1c_pct: lastBlood.hba1c_pct,
-      flags,
-      next_panel_due: settings.next_blood_panel_target,
+  // ───── exercises + last_session ─────
+  const exerciseSummaries = exercises.map((e) => {
+    const last = findLastSessionFor(sessions, e.slug);
+    const top = last ? bestSet(last.sets) : null;
+    return {
+      ...e,
+      last_session: last
+        ? {
+            id: last.id,
+            performed_at: last.created_at,
+            top_set: top
+              ? { weight_kg: top.weight_kg, reps: top.reps, rir: top.rir ?? null }
+              : null,
+            set_count: last.sets.length,
+          }
+        : null,
     };
-  } else {
-    bloodSection = {
-      date: null,
-      flags: [],
-      next_panel_due: settings.next_blood_panel_target,
-      note: '혈액검사 기록 없음.',
+  });
+
+  // ───── recent sessions / activities (각 7개) ─────
+  const recentSessions = [...sessions]
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, 7)
+    .map((s) => ({
+      id: s.id,
+      exercise_slug: s.exercise_slug,
+      performed_at: s.created_at,
+      top_set: bestSet(s.sets),
+      set_count: s.sets.length,
+    }));
+
+  const recentActivities = [...activities]
+    .sort((a, b) => b.performed_at.localeCompare(a.performed_at))
+    .slice(0, 7)
+    .map((a) => ({
+      id: a.id,
+      name: a.name,
+      performed_at: a.performed_at,
+      duration_min: a.duration_min ?? null,
+      intensity: a.intensity ?? null,
+      distance_km: a.distance_km ?? null,
+    }));
+
+  // ───── metrics + latest_value (per-slug 병렬 fetch) ─────
+  const metricEnriched = await Promise.all(metrics.map(async (m) => {
+    const records = await loadMetricRecordsFor(ctx, m.slug);
+    records.sort((a, b) => b.measured_at.localeCompare(a.measured_at));
+    const latest = records[0] ?? null;
+    let inTarget: boolean | null = null;
+    if (latest && (m.target_min !== undefined || m.target_max !== undefined)) {
+      inTarget =
+        (m.target_min === undefined || latest.value >= m.target_min) &&
+        (m.target_max === undefined || latest.value <= m.target_max);
+    }
+    return {
+      ...m,
+      latest_value: latest?.value ?? null,
+      latest_measured_at: latest?.measured_at ?? null,
+      latest_context: latest?.context ?? null,
+      in_target_range: inTarget,
+      records_count: records.length,
+    };
+  }));
+
+  // ───── meals today ─────
+  const todayMeals = meals
+    .filter((m) => m.eaten_at.slice(0, 10) === today)
+    .sort((a, b) => a.eaten_at.localeCompare(b.eaten_at));
+  const todayTotal = {
+    kcal: sumOpt(todayMeals.map((m) => m.kcal)),
+    protein_g: sumOpt(todayMeals.map((m) => m.protein_g)),
+    carbs_g: sumOpt(todayMeals.map((m) => m.carbs_g)),
+    fat_g: sumOpt(todayMeals.map((m) => m.fat_g)),
+  };
+  // BMR metric (slug 에 'bmr' 또는 'basal_metabolic' 포함) + activity_factor 있으면 유지 추정.
+  const bmrMetric = metricEnriched.find(
+    (m) => /bmr|basal_metabolic/i.test(m.slug) && typeof m.latest_value === 'number',
+  );
+  let maintenanceEstimate: { min: number; max: number; basis: string } | null = null;
+  if (bmrMetric && typeof settings.activity_factor === 'number' && bmrMetric.latest_value !== null) {
+    const af = settings.activity_factor;
+    const bmr = bmrMetric.latest_value as number;
+    maintenanceEstimate = {
+      min: Math.round(bmr * Math.max(1.0, af - 0.05)),
+      max: Math.round(bmr * (af + 0.05)),
+      basis: `BMR ${bmr} (${bmrMetric.slug}) × activity_factor ${af}`,
     };
   }
+  let calorieStatus: 'deficit' | 'slight_deficit' | 'maintenance' | 'slight_surplus' | 'surplus' | 'unknown' = 'unknown';
+  if (maintenanceEstimate && typeof todayTotal.kcal === 'number') {
+    const k = todayTotal.kcal;
+    if (k < maintenanceEstimate.min - 200) calorieStatus = 'deficit';
+    else if (k < maintenanceEstimate.min) calorieStatus = 'slight_deficit';
+    else if (k > maintenanceEstimate.max + 200) calorieStatus = 'surplus';
+    else if (k > maintenanceEstimate.max) calorieStatus = 'slight_surplus';
+    else calorieStatus = 'maintenance';
+  }
 
-  // ───── 부상 섹션 ─────
-  const injurySection = {
-    active: !!activeInjury,
-    current: activeInjury
-      ? { site: activeInjury.site, started: activeInjury.started, notes: activeInjury.notes }
-      : null,
-    history: injuryHistory.map((h) => ({
-      site: h.site,
-      started: h.started,
-      recovered: h.recovered ?? null,
-    })),
-  };
+  // ───── reminders + today ack count + next slot due ─────
+  const activeReminders = reminders.filter((r) => !r.end_date || r.end_date >= today);
+  const todayAcks = reminderAcks.filter((a) => a.acked_at.slice(0, 10) === today);
+  const ackCountBySlug = new Map<string, number>();
+  for (const a of todayAcks) ackCountBySlug.set(a.slug, (ackCountBySlug.get(a.slug) ?? 0) + 1);
 
-  // ───── 운동 last_sessions (4 운동 + 추가 발견된 운동) ─────
-  const seen = new Set<string>(TRACKED_EXERCISES);
-  for (const s of sessions) for (const e of s.exercises) seen.add(e.name);
-  const lastSessions: Record<string, any> = {};
-  for (const name of seen) {
-    const last = findLastSession(sessions, name);
-    if (last) {
-      const top = topSet(last.exercise);
-      lastSessions[name] = {
-        date: last.session.date,
-        equipment: last.exercise.equipment ?? null,
-        top_set: top,
-        condition: last.session.condition ?? null,
-        pain: last.session.pain ?? null,
-      };
+  const reminderSummaries = activeReminders
+    .map((r) => ({
+      ...r,
+      today_ack_count: ackCountBySlug.get(r.slug) ?? 0,
+      today_slot_count: r.schedule_times.length,
+    }))
+    .sort((a, b) => a.schedule_times[0].localeCompare(b.schedule_times[0]));
+
+  // 가장 가까운 다음 슬롯 (오늘 안에서, 현재 시각 이후 첫 미 ack).
+  const nextSlot = findNextSlot(activeReminders, todayAcks, today, nowMin);
+
+  // ───── 진단: missing_setup ─────
+  const missingSetup: string[] = [];
+  if (!goal) missingSetup.push('goal');
+  if (metrics.length === 0) missingSetup.push('metrics');
+  if (exercises.length === 0 && activities.length === 0) missingSetup.push('exercises_or_activities');
+  // reminders 는 선택 — 없어도 missing 아님.
+
+  // ───── 진단: stale metrics (14일+ 측정 없음) ─────
+  const staleRecords: { slug: string; days_since: number | null; priority: string }[] = [];
+  for (const m of metricEnriched) {
+    if (m.latest_measured_at === null) {
+      staleRecords.push({ slug: m.slug, days_since: null, priority: m.priority });
+      continue;
+    }
+    const daysSince = daysBetween(m.latest_measured_at.slice(0, 10), today);
+    if (daysSince >= STALE_DAYS) {
+      staleRecords.push({ slug: m.slug, days_since: daysSince, priority: m.priority });
     }
   }
 
-  // ───── 식단 7일 평균 ─────
-  const recentMeals = meals.filter((m) => {
-    return daysBetween(m.date, today) <= 7 && daysBetween(m.date, today) >= 0;
+  // ───── meta block (AI 행동 규약) ─────
+  const meta = buildMetaBlock({
+    goal_present: !!goal,
+    missing_setup: missingSetup,
+    stale_records: staleRecords,
+    has_metrics: metrics.length > 0,
+    has_exercises: exercises.length > 0,
+    activity_factor_set: typeof settings.activity_factor === 'number',
+    has_bmr_metric: !!bmrMetric,
   });
-  const dailyTotals = aggregateByDay(recentMeals);
-  const daysCovered = Object.keys(dailyTotals).length;
-  const avgKcal = daysCovered ? Math.round(sumValues(dailyTotals, 'kcal') / daysCovered) : null;
-  const avgProtein = daysCovered ? Number((sumValues(dailyTotals, 'protein') / daysCovered).toFixed(1)) : null;
-  const af = settings.activity_factor;
-  const maintenanceEstimate = lastInBody
-    ? {
-        min: Math.round(lastInBody.bmr_kcal * (af - 0.05)),
-        max: Math.round(lastInBody.bmr_kcal * (af + 0.05)),
-      }
-    : null;
-  let status7day: 'deficit' | 'maintenance' | 'surplus' | 'slight_deficit' | 'slight_surplus' | 'unknown' = 'unknown';
-  if (avgKcal !== null && maintenanceEstimate) {
-    const mid = (maintenanceEstimate.min + maintenanceEstimate.max) / 2;
-    if (avgKcal < maintenanceEstimate.min - 150) status7day = 'deficit';
-    else if (avgKcal < maintenanceEstimate.min) status7day = 'slight_deficit';
-    else if (avgKcal > maintenanceEstimate.max + 150) status7day = 'surplus';
-    else if (avgKcal > maintenanceEstimate.max) status7day = 'slight_surplus';
-    else status7day = 'maintenance';
-  }
-
-  // ───── 영양제 섹션 ─────
-  const supplementSection = buildSupplementSection(supps, allIntakes, settings.timezone, today);
-
-  // ───── 누락 user_settings 진단 ─────
-  // 0/빈 으로 남아있는 필수 키. 호출 AI 가 사용자에게 묻거나 init_user_profile 호출 권고.
-  const missingSettings: string[] = [];
-  for (const k of REQUIRED_PROFILE_KEYS) {
-    if (isMissingValue(k, (settings as any)[k])) missingSettings.push(k);
-  }
 
   return {
     today,
-    user_constants: {
-      target_weight_range: [settings.target_weight_min, settings.target_weight_max],
-      target_weight_rule: settings.target_weight_rule,
-      four_goals: settings.four_goals,
-      pr: {
-        squat: settings.pr_squat_kg,
-        bench_press: settings.pr_bench_press_kg,
-        shoulder_press: settings.pr_shoulder_press_kg,
-        deadlift: settings.pr_deadlift_kg,
-      },
-    },
-    missing_settings: missingSettings,
-    weight: {
-      last_measurement: lastWeight
-        ? {
-            date: lastWeight.date,
-            time: lastWeight.time ?? null,
-            weight_kg: lastWeight.weight_kg,
-            context: lastWeight.measurement_context,
-          }
-        : null,
-      last_7day_avg: last7Avg !== null ? round2(last7Avg) : null,
-      in_target_range: inRange,
-      trend_30day: trend30,
-    },
-    last_inbody: inbodySection,
-    last_blood: bloodSection,
-    injury: injurySection,
-    last_sessions: lastSessions,
-    diet_recent: {
-      days_covered: daysCovered,
-      '7day_avg_kcal': avgKcal,
-      '7day_avg_protein_g': avgProtein,
+    timezone: tz,
+    now_minutes: nowMin,
+
+    goal: goal ?? null,
+
+    exercises: exerciseSummaries,
+    recent_sessions: recentSessions,
+    recent_activities: recentActivities,
+
+    metrics: metricEnriched,
+
+    meals_today: {
+      records: todayMeals,
+      total: todayTotal,
       maintenance_estimate: maintenanceEstimate,
-      status_7day: status7day,
+      calorie_status: calorieStatus,
     },
-    supplements: supplementSection,
-    meta: {
-      ai_must_call_get_state_before_recommendation: true,
-      ai_must_confirm_dates_before_recording: true,
-      ai_must_get_user_confirmation_before_record_meal: true,
-      ai_must_not_invent_loads_outside_compute_next_load: true,
-      ai_must_not_diagnose_from_blood_flags: true,
-      ai_must_call_init_user_profile_if_missing_settings_nonempty:
-        missingSettings.length > 0,
+
+    reminders: reminderSummaries,
+    next_reminder_slot: nextSlot,
+
+    settings: {
+      timezone: settings.timezone,
+      activity_factor: settings.activity_factor,
     },
+
+    missing_setup: missingSetup,
+    stale_records: staleRecords,
+
+    meta,
   };
 }
 
 // ───── 헬퍼 ─────
 
-function sortByDateTime(a: WeightEntry, b: WeightEntry): number {
-  const d = a.date.localeCompare(b.date);
-  if (d !== 0) return d;
-  return (a.time || '').localeCompare(b.time || '');
+function sumOpt(arr: (number | undefined)[]): number | null {
+  const f = arr.filter((x): x is number => typeof x === 'number');
+  if (f.length === 0) return null;
+  return Number(f.reduce((s, x) => s + x, 0).toFixed(2));
 }
 
-function recentDays(weights: WeightEntry[], untilIso: string, days: number): WeightEntry[] {
-  const cutoff = subtractDays(untilIso, days);
-  return weights.filter((w) => w.date >= cutoff && w.date <= untilIso);
-}
-
-function trendOver(weights: WeightEntry[], untilIso: string, days: number): 'up' | 'down' | 'stable' | 'unknown' {
-  const win = recentDays(weights, untilIso, days);
-  if (win.length < 2) return 'unknown';
-  const sorted = [...win].sort((a, b) => sortByDateTime(a, b));
-  const first = sorted[0].weight_kg;
-  const last = sorted[sorted.length - 1].weight_kg;
-  const diff = last - first;
-  if (Math.abs(diff) < 0.5) return 'stable';
-  return diff > 0 ? 'up' : 'down';
-}
-
-function avg(xs: number[]): number | null {
-  if (xs.length === 0) return null;
-  return xs.reduce((s, x) => s + x, 0) / xs.length;
-}
-
-function topSet(ex: import('./types.ts').Exercise) {
-  let top: any = null;
-  for (const s of ex.sets) {
-    if (s.weight_kg === undefined) continue;
-    if (!top || s.weight_kg > top.weight_kg) {
-      top = { weight_kg: s.weight_kg, reps: s.reps ?? null, rir: s.rir ?? null };
-    }
-  }
-  // 유산소 (weight_kg 없음) — duration/distance 우선.
-  if (!top && ex.sets[0]) {
-    const s = ex.sets[0];
-    if (s.duration_min !== undefined || s.distance_km !== undefined) {
-      top = { duration_min: s.duration_min ?? null, distance_km: s.distance_km ?? null };
-    }
-  }
-  return top;
-}
-
-function aggregateByDay(meals: Meal[]): Record<string, { kcal: number; protein: number }> {
-  const out: Record<string, { kcal: number; protein: number }> = {};
-  for (const m of meals) {
-    if (!out[m.date]) out[m.date] = { kcal: 0, protein: 0 };
-    out[m.date].kcal += mealKcal(m);
-    out[m.date].protein += mealProtein(m);
-  }
-  return out;
-}
-
-function mealKcal(m: Meal): number {
-  if (typeof m.total_kcal_estimated === 'number') return m.total_kcal_estimated;
-  return m.items.reduce((s, it) => s + (it.estimated_kcal || 0), 0);
-}
-
-function mealProtein(m: Meal): number {
-  return m.items.reduce((s, it) => s + (it.protein_g || 0), 0);
-}
-
-function sumValues(d: Record<string, { kcal: number; protein: number }>, k: 'kcal' | 'protein'): number {
-  return Object.values(d).reduce((s, v) => s + v[k], 0);
-}
-
-function subtractDays(iso: string, days: number): string {
-  const [y, m, d] = iso.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() - days);
-  return (
-    dt.getUTCFullYear() + '-' +
-    String(dt.getUTCMonth() + 1).padStart(2, '0') + '-' +
-    String(dt.getUTCDate()).padStart(2, '0')
-  );
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
-function buildSupplementSection(
-  supps: SupplementSchedule[],
-  intakes: SupplementIntake[],
-  tz: string,
-  todayUtc: string,
-) {
-  // 오늘 (사용자 timezone 기준)
-  const { date: todayLocal, time: nowHHMM } = nowInTz(tz);
-  const nowMin = timeToMinutes(nowHHMM);
-
-  // 활성 supps 만 (end_date / start_date 필터)
-  const active = supps.filter((s) => {
-    if (s.start_date && todayLocal < s.start_date) return false;
-    if (s.end_date && todayLocal > s.end_date) return false;
-    return true;
-  });
-
-  // 오늘 복용 기록 lookup
-  const todayIntakeSet = new Set<string>();
-  for (const it of intakes) {
-    if (it.date === todayLocal) todayIntakeSet.add(`${it.slug}:${timeToKey(it.slot)}`);
-  }
-
-  // 오늘 due 인 supps 각각: 슬롯별 상태
-  const todaySchedule: any[] = [];
-  let dueSlotCount = 0;
-  let takenSlotCount = 0;
-  for (const s of active) {
-    const due = isDue(s, todayLocal);
-    if (!due) continue;
-    const slots = s.schedule_times.map((slot) => {
-      const slotMin = timeToMinutes(slot);
-      const taken = todayIntakeSet.has(`${s.slug}:${timeToKey(slot)}`);
-      const status: 'taken' | 'pending' | 'overdue' | 'upcoming' =
-        taken ? 'taken' :
-        nowMin < slotMin - 5 ? 'upcoming' :
-        nowMin > slotMin + 60 ? 'overdue' :
-        'pending';
-      dueSlotCount += 1;
-      if (taken) takenSlotCount += 1;
-      return { slot, status };
-    });
-    todaySchedule.push({
-      slug: s.slug,
-      display_name: s.display_name,
-      with_meal: s.with_meal ?? null,
-      dose_note: s.dose_note ?? null,
-      slots,
-    });
-  }
-
-  // 최근 7일 순응도 — 매일 due 인 슬롯 수 vs 실제 복용 슬롯 수.
-  const adherence = computeAdherence(active, intakes, todayLocal, 7);
-
-  return {
-    today_local: todayLocal,
-    timezone: tz,
-    active_count: active.length,
-    today_due_slots: dueSlotCount,
-    today_taken_slots: takenSlotCount,
-    today_schedule: todaySchedule,
-    adherence_7day_pct: adherence,
-    note:
-      'today_schedule[].slots[].status: taken|pending|overdue|upcoming. ' +
-      'overdue = 60분 이상 지났는데 안 먹음. AI 는 사용자에게 짧게 리마인드만 권고.',
-  };
-}
-
-function isDue(s: SupplementSchedule, today: string): boolean {
-  if (s.start_date && today < s.start_date) return false;
-  if (s.end_date && today > s.end_date) return false;
-  const every = s.every_n_days ?? 1;
-  if (every === 1) return true;
-  const start = s.start_date || (s.created_at || today).slice(0, 10);
-  const diff = daysSinceIso(start, today);
-  if (diff < 0) return false;
-  return diff % every === 0;
-}
-
-function computeAdherence(
-  supps: SupplementSchedule[],
-  intakes: SupplementIntake[],
+function findNextSlot(
+  reminders: ReminderDef[],
+  todayAcks: { slug: string; slot_iso: string }[],
   today: string,
-  windowDays: number,
-): number | null {
-  if (supps.length === 0) return null;
-  let due = 0;
-  let taken = 0;
-  // 윈도우의 각 날짜
-  for (let i = 0; i < windowDays; i++) {
-    const d = shiftDate(today, -i);
-    const intakeSet = new Set<string>();
-    for (const it of intakes) {
-      if (it.date === d) intakeSet.add(`${it.slug}:${timeToKey(it.slot)}`);
-    }
-    for (const s of supps) {
-      if (!isDue(s, d)) continue;
-      for (const slot of s.schedule_times) {
-        due += 1;
-        if (intakeSet.has(`${s.slug}:${timeToKey(slot)}`)) taken += 1;
+  nowMin: number,
+): { slug: string; display_name: string; slot: string; minutes_until: number } | null {
+  const ackedSlots = new Set(todayAcks.map((a) => `${a.slug}@${a.slot_iso}`));
+  let best: { slug: string; display_name: string; slot: string; minutes_until: number } | null = null;
+  for (const r of reminders) {
+    for (const slot of r.schedule_times) {
+      const slotMin = hhmmToMinutes(slot);
+      if (slotMin < nowMin) continue;
+      const slotIso = `${today}T${slot}:00`;
+      if (ackedSlots.has(`${r.slug}@${slotIso}`)) continue;
+      const minutesUntil = slotMin - nowMin;
+      if (best === null || minutesUntil < best.minutes_until) {
+        best = { slug: r.slug, display_name: r.display_name, slot, minutes_until: minutesUntil };
       }
     }
   }
-  if (due === 0) return null;
-  return Math.round((taken / due) * 100);
+  return best;
 }
 
-function shiftDate(iso: string, days: number): string {
-  const [y, m, d] = iso.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() + days);
-  const yy = dt.getUTCFullYear();
-  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getUTCDate()).padStart(2, '0');
-  return `${yy}-${mm}-${dd}`;
+interface MetaInput {
+  goal_present: boolean;
+  missing_setup: string[];
+  stale_records: { slug: string; days_since: number | null; priority: string }[];
+  has_metrics: boolean;
+  has_exercises: boolean;
+  activity_factor_set: boolean;
+  has_bmr_metric: boolean;
 }
 
-function computeFlagsFromBlood(b: BloodPanel): string[] {
-  const f: string[] = [];
-  if (b.ldl_mg_dl !== undefined) {
-    if (b.ldl_mg_dl >= 160) f.push('ldl_high');
-    else if (b.ldl_mg_dl >= 130) f.push('ldl_borderline');
+function buildMetaBlock(x: MetaInput) {
+  // 단계 판단: goal → metrics/exercises → routine 운영.
+  let protocolStep: 'awaiting_goal' | 'awaiting_initial_setup' | 'operational' = 'operational';
+  let nextRecommendedAction: string;
+  if (!x.goal_present) {
+    protocolStep = 'awaiting_goal';
+    nextRecommendedAction =
+      'set_goal 호출 — 사용자에게 "어떤 건강 목표를 갖고 있어?" 자연어로 묻고 description 그대로 저장.';
+  } else if (!x.has_metrics && !x.has_exercises) {
+    protocolStep = 'awaiting_initial_setup';
+    nextRecommendedAction =
+      'propose_setup_from_goal 호출 → 추천 목록을 사용자에게 보여주고 합의된 항목만 set_metric / set_exercise / set_reminder.';
+  } else {
+    nextRecommendedAction =
+      '사용자 발화 처리. 기록 요청이면 record_* / 추천 요청이면 metrics 와 last_session 으로 근거 있는 답.';
   }
-  if (b.hdl_mg_dl !== undefined && b.hdl_mg_dl < 40) f.push('hdl_low');
-  if (b.total_cholesterol_mg_dl !== undefined && b.total_cholesterol_mg_dl >= 240) f.push('total_cholesterol_high');
-  if (b.triglycerides_mg_dl !== undefined && b.triglycerides_mg_dl >= 200) f.push('triglycerides_high');
-  if (b.uric_acid_mg_dl !== undefined && b.uric_acid_mg_dl >= 7.0) f.push('uric_acid_high');
-  if (b.vitamin_d_ng_ml !== undefined) {
-    if (b.vitamin_d_ng_ml < 20) f.push('vitamin_d_deficient');
-    else if (b.vitamin_d_ng_ml < 30) f.push('vitamin_d_insufficient');
+
+  const aiShouldNot: string[] = [
+    '사용자 설명 없는 metric / exercise / reminder 를 마음대로 등록하지 말 것.',
+    'get_state 안 부르고 무게·칼로리·복용량 추천 금지 (빈 추론 금지).',
+    '날짜 / 시각을 추측하지 말 것 — settings.timezone 기준 today / now_minutes 사용.',
+    '의학적 진단·처방 흉내 금지 — metric in_target_range=false 면 사용자에게 사실만 전달.',
+    'compute_next_load 결과 무게에 자체적으로 더하거나 빼지 말 것.',
+  ];
+  if (!x.activity_factor_set) {
+    aiShouldNot.push(
+      'activity_factor 없이 칼로리 유지·결핍·잉여 단정 금지 (사용자에게 활동량 합의 후 update_user_settings).',
+    );
   }
-  if (b.fasting_glucose_mg_dl !== undefined) {
-    if (b.fasting_glucose_mg_dl >= 126) f.push('fasting_glucose_diabetic_range');
-    else if (b.fasting_glucose_mg_dl >= 100) f.push('fasting_glucose_prediabetic_range');
-  }
-  if (b.hba1c_pct !== undefined) {
-    if (b.hba1c_pct >= 6.5) f.push('hba1c_diabetic_range');
-    else if (b.hba1c_pct >= 5.7) f.push('hba1c_prediabetic_range');
-  }
-  return f;
+
+  const guidanceText =
+    protocolStep === 'awaiting_goal'
+      ? '아직 목표가 없음. 사용자에게 친근하게 묻고 set_goal 호출.'
+      : protocolStep === 'awaiting_initial_setup'
+        ? '목표는 있지만 metrics·exercises 비어있음. propose_setup_from_goal 로 추천 → 사용자 합의 → set_*.'
+        : '운영 모드. 기록·조회·계산을 사실 기반으로 처리.';
+
+  const goalCoherenceHint = x.goal_present
+    ? '추천 / 응답 전에 goal.description 을 한번 다시 읽고, 사용자 발화와 목표 정합성 검증.'
+    : null;
+
+  return {
+    protocol_step: protocolStep,
+    ai_must_call_set_goal_if_goal_null: !x.goal_present,
+    ai_must_call_get_state_before_recommendation: true,
+    ai_must_confirm_dates_before_recording: true,
+    ai_should_not: aiShouldNot,
+    next_recommended_action: nextRecommendedAction,
+    guidance_text: guidanceText,
+    goal_coherence_hint: goalCoherenceHint,
+    stale_metric_count: x.stale_records.length,
+  };
 }

@@ -1,467 +1,405 @@
-# 심장이 득근득근해지는 마법 (nesy.app.getmuscle)
+# nesy.app.health — 건강 마도서
 #
 # 호출 AI (Claude / ChatGPT / Gemini) 의 외장 기억장치.
-# 추천하지 않고, 기록 / 돌려줌 / 검증된 공식으로 계산만 한다.
-# 설계 개요는 README.md, 함수별 근거는 각 핸들러 주석.
+# 마도서는 추천하지 않고, 기록 / 돌려줌 / 검증된 공식으로 계산만 한다.
+#
+# 핵심 컨셉:
+#   - 사용자 목표는 자연어로 저장 (체중 위주 사람도, 혈당 위주 사람도, 체지방 위주 사람도 동시 지원).
+#   - 어떤 metric / exercise / reminder 를 추적할지는 AI 가 목표를 보고 판단 → 사용자 합의 → 등록.
+#   - 마도서는 metric · exercise · reminder · meal 의 통로만 제공. 항목 구성은 유동적.
+#
+# AI 행동 규약 (get_state.meta 에서도 동일하게 보고됨):
+#   - 어떤 응답·추천·계산 전에도 반드시 get_state 를 먼저 호출 (빈 추론 금지).
+#   - goal 이 null 이면 무조건 먼저 set_goal (사용자에게 자연어로 묻고 description 그대로 저장).
+#   - metrics / exercises 가 비어있으면 propose_setup_from_goal → 사용자 합의 → set_*.
+#   - 사용자가 안 말한 metric / exercise / reminder 를 마음대로 등록하지 말 것.
+#   - 날짜 / 시각 추측 금지. settings.timezone 기준 today / now_minutes 사용.
+#   - 의학적 진단·처방 흉내 금지 — in_target_range=false 면 사실만 전달.
+#   - compute_next_load 결과 무게에 자체적으로 가감 금지.
 
 tools:
-  # ─────────────────────────────────────────────────────────────────────
-  # 운동 세션 기록
-  # ─────────────────────────────────────────────────────────────────────
-  - name: record_session
+  # ═══════════════════════════════════════════════════════════════════
+  # Goal — 자연어 목표
+  # ═══════════════════════════════════════════════════════════════════
+  - name: set_goal
     description: |
-      운동 세션 한 건을 기록합니다. "오늘 스쿼트 60kg 5회 3세트" 같은 보고를 받으면 호출.
-      weight_kg 는 봉을 포함한 총 중량(kg). 스미스머신/프리웨이트 비교 차단을 위해 equipment 도 가능하면 채울 것.
-      반환값의 warnings 에 ① 같은 운동 직전 대비 15% 이상 증량 ② 통증 발생 ③ 활성 부상 부위와 충돌
-      세 가지 신호가 들어옴 — 호출 AI 가 그대로 사용자에게 전달.
-      주의: 사용자가 "오늘", "어제" 같은 상대 시간을 말하면 절대 추측하지 말고
-      플랫폼 시간 API 또는 사용자 명시 확인을 거쳐 date 파라미터를 채울 것. 날짜 혼동은 가장 자주 일어나는 실수.
+      사용자의 건강 목표를 자연어로 저장. 마도서의 기준점.
+      예: "체중을 70kg 까지 줄이면서 근육량은 유지하고 싶어." / "당뇨 관리 — 식후 혈당 180 안 넘기기" /
+          "마라톤 완주 준비. 6개월 안에 풀코스."
+      목표 자체에 수치를 강제하지 않음 — 사람마다 목표 형태가 다름 (체중·체지방·혈당·심박·근비대·지구력 등).
+      이 함수 호출 직후 호출 AI 는 propose_setup_from_goal 로 추천 setup 을 받아 사용자에게 보여주고
+      합의된 항목만 set_metric / set_exercise / set_reminder 로 등록할 것.
+      같은 사용자가 다시 부르면 description 갱신 (set_at 은 첫 등록 시각 유지).
     inputSchema:
       type: object
-      required: [date, exercises]
+      required: [description]
       properties:
-        date:
+        description:
           type: string
-          description: "ISO 날짜 (YYYY-MM-DD). 사용자가 '오늘' 이라 하면 호출 AI 가 시간 API로 확인 후 채울 것. 추측 금지."
-        exercises:
-          type: array
           description: |
-            이 세션에서 한 운동 리스트. 각 원소는 객체이며 다음 키를 가진다.
-            { name: string (운동명. 예 'squat'·'bench_press'·'deadlift'·'shoulder_press'·'running_km'. snake_case 권장),
-              equipment?: 'smith'|'barbell'|'dumbbell'|'machine'|'bodyweight'|'cardio' (스미스/프리웨이트 직접 비교 차단을 위해 가능하면 항상 채울 것),
-              sets: 배열, 각 원소는 { weight_kg?: number (봉 포함 총 중량 kg — 사용자가 실제로 든 무게 그대로), reps?: integer, rir?: integer (Reps In Reserve 0-5. 모르면 null 또는 생략), duration_min?: number (유산소용), distance_km?: number (유산소용) } }
-            name 과 sets 는 필수.
-        pain:
-          type: object
-          description: |
-            통증 발생 시. 없으면 생략. 구조:
-            { site: string ('lower_back'·'knee'·'shoulder'·'elbow'·'wrist' 등),
-              severity: integer (1-10),
-              note?: string }
-        condition:
-          type: integer
-          description: "사용자 주관 컨디션 1-10. 9-10 best, 1-3 worst. 호출 AI 가 묻고 채움."
-        note:
-          type: string
+            자연어 목표 문장. 1자 이상 1000자 이하. 사용자 발화 그대로가 좋음 — 의역·요약 금지.
 
-  # ─────────────────────────────────────────────────────────────────────
-  # 체중 기록
-  # ─────────────────────────────────────────────────────────────────────
-  - name: record_weight
+  # ═══════════════════════════════════════════════════════════════════
+  # Exercise — 루틴 운동 정의 (사용자가 정기적으로 하는 운동)
+  # ═══════════════════════════════════════════════════════════════════
+  - name: set_exercise
     description: |
-      체중 한 건 기록. measurement_context (fasted / postmeal / postworkout / unknown) 는 반드시 명시 —
-      사용자가 안 말하면 호출 AI 가 물어볼 것. unknown 저장은 비추.
-      반환값 in_range 는 user_settings.target_weight_rule (기본 always_in_range = 측정 시점 무관 항상)
-      기준으로 판정. 호출 AI 가 "공복 기준 OK" 식으로 자체 해석 금지.
-      날짜 처리는 record_session 과 동일 규칙.
+      루틴 운동 정의 한 건 등록·수정 (upsert). 같은 slug 면 덮어쓰기.
+      compute_next_load 가 사용할 baseline — 등록 안 된 운동은 세션 기록 불가.
+      비루틴 (산책·축구·자전거 등 일회성) 은 record_activity 사용 — 등록 불필요.
+      isolation 운동은 compute_next_load 가 Refalo 2024 계수 ×0.7 자동 적용.
     inputSchema:
       type: object
-      required: [date, weight_kg, measurement_context]
-      properties:
-        date: { type: string, description: "ISO 날짜 (YYYY-MM-DD)." }
-        time: { type: string, description: "'HH:MM' 형식. 선택." }
-        weight_kg: { type: number }
-        measurement_context:
-          type: string
-          description: "'fasted' (공복) | 'postmeal' (식후) | 'postworkout' (운동 직후) | 'unknown'."
-        note: { type: string }
-
-  # ─────────────────────────────────────────────────────────────────────
-  # InBody 결과
-  # ─────────────────────────────────────────────────────────────────────
-  - name: record_inbody
-    description: |
-      InBody (체성분 분석) 결과 한 건 기록. 마도서가 가장 신뢰하는 변화 지표.
-      반환값 delta 에 직전 InBody 대비 변화량 + interpretation_hint
-      ('recomp_progress' / 'muscle_loss' / 'fat_gain' / 'stable') 가 들어옴 —
-      호출 AI 가 이걸 보고 사용자에게 설명. 마도서는 단정 안 함.
-      날짜 처리는 record_session 과 동일.
-    inputSchema:
-      type: object
-      required: [date, weight_kg, skeletal_muscle_kg, body_fat_kg, body_fat_pct, bmr_kcal]
-      properties:
-        date: { type: string }
-        weight_kg: { type: number }
-        skeletal_muscle_kg: { type: number, description: "골격근량 kg." }
-        body_fat_kg: { type: number, description: "체지방량 kg." }
-        body_fat_pct: { type: number, description: "체지방률 %." }
-        bmr_kcal: { type: integer, description: "기초대사량 kcal." }
-        visceral_fat_level: { type: integer, description: "내장지방 레벨. 선택." }
-        bmi: { type: number, description: "BMI. 선택." }
-        note: { type: string }
-
-  # ─────────────────────────────────────────────────────────────────────
-  # 혈액검사
-  # ─────────────────────────────────────────────────────────────────────
-  - name: record_blood_panel
-    description: |
-      혈액검사 결과 한 건 기록. 한국 일반 임상 기준으로 정상 범위 플래그를 반환값에 채움
-      (ldl_high / hdl_low / uric_acid_high / vitamin_d_deficient 등).
-      호출 AI 는 플래그만 보고 진단/처방 흉내 금지. 다음 검사 예정일은 user_settings 의
-      next_blood_panel_target 참고 (기본 마지막 검사 + 90일).
-      날짜 처리는 record_session 과 동일.
-    inputSchema:
-      type: object
-      required: [date]
-      properties:
-        date: { type: string }
-        ldl_mg_dl: { type: number }
-        hdl_mg_dl: { type: number }
-        total_cholesterol_mg_dl: { type: number }
-        triglycerides_mg_dl: { type: number }
-        uric_acid_mg_dl: { type: number }
-        vitamin_d_ng_ml: { type: number }
-        fasting_glucose_mg_dl: { type: number }
-        hba1c_pct: { type: number }
-        note: { type: string }
-
-  # ─────────────────────────────────────────────────────────────────────
-  # 식단 기록 (컨펌 후)
-  # ─────────────────────────────────────────────────────────────────────
-  - name: record_meal
-    description: |
-      식단 한 끼 기록. 사용자가 식사 사진을 보내면 호출 AI 가 사진을 직접 분석한 뒤,
-      "이거 X 로 보이는데 맞아? 양은?" 사용자에게 컨펌받은 결과만 이 함수로 저장한다.
-      컨펌 없이 추정으로 채우지 말 것. source='photo_confirmed' 는 컨펌이 끝난 경우에만.
-      반환값에 그 날의 누적 kcal/단백질 + 마지막 InBody 의 BMR 기반 유지 추정치 +
-      현재 상태 ('deficit' / 'maintenance' / 'surplus') 가 들어옴.
-      날짜 처리는 record_session 과 동일.
-    inputSchema:
-      type: object
-      required: [date, slot, items, source]
-      properties:
-        date: { type: string }
-        slot:
-          type: string
-          description: "'breakfast' | 'lunch' | 'dinner' | 'snack'"
-        items:
-          type: array
-          description: |
-            음식 리스트. 각 원소는 객체:
-            { name: string (예 'sabamiso_ni'·'americano_tall'·'apple'. snake_case 권장),
-              estimated_kcal?: integer,
-              protein_g?: number,
-              portion_note?: string (예 '반마리'·'1잔') }
-            name 은 필수.
-        source:
-          type: string
-          description: "'user_text' (사용자 직접 발화) | 'photo_confirmed' (호출 AI 사진 분석 → 사용자 컨펌) | 'ai_recommended_consumed' (record_recipe 로 저장된 추천을 실제로 먹음)"
-        recipe_ref:
-          type: string
-          description: "source='ai_recommended_consumed' 일 때, 이전에 record_recipe 가 돌려준 recipe_id."
-        total_kcal_estimated: { type: integer }
-        note: { type: string }
-
-  # ─────────────────────────────────────────────────────────────────────
-  # AI 추천 레시피 기록
-  # ─────────────────────────────────────────────────────────────────────
-  - name: record_recipe
-    description: |
-      호출 AI 가 사용자에게 추천한 레시피를 그 시점에 자동 저장. 실제 섭취 여부는 별개
-      (먹었으면 record_meal 의 recipe_ref 로 연결).
-      source_url 은 호출 AI 가 검증한 유튜브/신뢰 레시피 사이트 URL — 좆문가 블로그 거름.
-      날짜 처리는 record_session 과 동일.
-    inputSchema:
-      type: object
-      required: [date, name, source_url]
-      properties:
-        date: { type: string, description: "추천한 날짜." }
-        name: { type: string }
-        cuisine: { type: string, description: "'japanese' | 'italian' | 'korean' 등." }
-        source_url:
-          type: string
-          description: "유튜브 또는 신뢰 가능한 레시피 사이트 URL. 호출 AI 는 검증된 URL만 채울 것."
-        ingredients:
-          type: array
-          description: "재료명 문자열 배열. 예: ['고등어','된장','대파','생강']."
-        primary_protein_g: { type: number }
-        estimated_kcal: { type: integer }
-        ldl_friendly: { type: boolean, description: "포화지방 낮고 식이섬유 높으면 true." }
-        rationale:
-          type: string
-          description: "왜 이걸 추천했는지 한 줄. 예: 'LDL 관리 + 단백질 35g 확보 + 정통 일식'."
-
-  # ─────────────────────────────────────────────────────────────────────
-  # 영양제 / 약 정기 복용 정의 (upsert)
-  # ─────────────────────────────────────────────────────────────────────
-  - name: set_supplement
-    description: |
-      영양제·비타민·약 정기 복용 스케줄 한 건 등록/수정. 같은 slug 면 덮어쓰기 (upsert).
-      예: 사용자가 "비타민D 매일 아침 9시" 하면 set_supplement(slug='vitamin_d', display_name='비타민D',
-      times_per_day=1, schedule_times=['09:00']). "오메가3 9시·21시 2번" 이면 schedule_times=['09:00','21:00'].
-      매일 아닌 경우 every_n_days 사용 (격일=2, 주 1회=7). 시작/종료일 잡으면 그 사이만 알림.
-      등록 즉시 5분 워커가 check_notifications 호출 시 슬롯 시간 ±30분 안에 미복용이면 Web Push 알림.
-      알림 정책은 "한 번만" — 사용자가 놓치면 그 슬롯은 끝, 다음 슬롯에서 새로 시작.
-    inputSchema:
-      type: object
-      required: [slug, display_name, schedule_times]
+      required: [slug, display_name, category]
       properties:
         slug:
           type: string
-          description: "영문 소문자 snake_case 고유 식별자. 예: 'vitamin_d', 'omega3', 'magnesium_glycinate', 'aspirin_low_dose'."
+          description: "snake_case 영문 시작. 예: 'squat', 'bench_press', 'incline_dumbbell_press'."
         display_name:
           type: string
-          description: "사용자에게 보일 이름. 예: '비타민D 3000IU', '오메가3'. 한국어 가능."
-        times_per_day:
-          type: integer
-          description: "하루 복용 횟수. 생략하면 schedule_times 길이로 자동. 명시 시 schedule_times 길이와 일치 필수."
-        schedule_times:
-          type: array
-          description: "복용 시각 배열. 각 원소 'HH:MM' 24시간 형식. 예: ['09:00'] 또는 ['09:00','13:00','21:00']."
-        every_n_days:
-          type: integer
-          description: "복용 간격 (일). 매일=1 (기본), 격일=2, 주 1회=7. start_date 기준 계산."
-        with_meal:
-          type: boolean
-          description: "식사와 함께 복용 권장이면 true. 알림 body 에 '식사 후' 표시."
-        start_date:
+          description: "사용자에게 보일 이름. 한국어 가능."
+        category:
           type: string
-          description: "복용 시작일 YYYY-MM-DD. 이 날짜 전엔 알림 안 옴."
-        end_date:
-          type: string
-          description: "복용 종료일 YYYY-MM-DD. 이 날짜 후엔 알림 안 옴. 처방약 일시 복용에 유용."
-        dose_note:
-          type: string
-          description: "용량/형태 메모. 예: '1캡슐', '반 알', '5ml'. 알림 body 에 함께 표시."
-        notes:
-          type: string
-          description: "기타 메모. 알림 body 에 함께 표시."
+          description: "'compound' (스쿼트·벤치·데드 등 다관절) | 'isolation' (컬·익스텐션 등 단관절)."
+        current_pr_kg:
+          type: number
+          description: "1RM 또는 측정된 최대 무게 kg. 모르면 생략."
 
-  - name: list_supplements
+  - name: list_exercises
     description: |
-      현재 등록된 모든 영양제·약 정기 복용 정의 목록 (활성만 — end_date 지난 건 제외).
-      "지금 뭐 챙겨먹고 있어?" / "오늘 남은 복용은?" 류 질문에 답하기 전 호출.
-      반환값에 timezone/today 도 포함 — 호출 AI 가 추정 금지.
+      등록된 루틴 운동 전체 목록 + 각각의 마지막 세션 top set + 7일 내 빈도.
+      "지금 뭐 하고 있어?" / "스쿼트 마지막에 몇 kg 했어?" 류 질문 전에 호출.
     inputSchema:
       type: object
       properties: {}
 
-  - name: delete_supplement
+  - name: delete_exercise
     description: |
-      영양제·약 정의 영구 삭제. 과거 복용 기록 (intake) 은 보존 — 순응도 통계 유지.
-      일시 중단이면 set_supplement 로 end_date 추가가 더 안전.
+      루틴 운동 정의 영구 삭제. 과거 세션 기록은 보존.
+      일시 중단이면 그냥 안 부르면 됨 — 굳이 삭제할 필요 X.
     inputSchema:
       type: object
       required: [slug]
       properties:
-        slug:
-          type: string
-          description: "삭제할 정의의 slug."
+        slug: { type: string }
 
-  - name: record_supplement_intake
+  - name: record_session
     description: |
-      영양제·약 실제 복용 한 건 기록. 사용자가 "비타민D 방금 먹었어" 보고하면 호출.
-      slot 인자가 없으면 현재 시간 (사용자 timezone) 에 가장 가까운 정의된 슬롯에 자동 매칭.
-      여러 슬롯이 있고 어느 슬롯인지 헷갈리면 호출 AI 가 사용자에게 물어보고 slot 명시.
-      같은 (date, slug, slot) 에 다시 부르면 덮어씀 (idempotent) — 중복 카운트 없음.
-      이 기록이 들어오면 그 슬롯의 알림은 자동으로 안 나감.
+      루틴 운동 한 세션 기록. exercise_slug 는 set_exercise 로 등록된 슬러그여야 함 (없으면 에러).
+      각 세트의 weight_kg / reps 필수, rir 선택. 사용자가 "스쿼트 80kg 5회 3세트" 보고하면
+      [{weight_kg:80, reps:5}, {weight_kg:80, reps:5}, {weight_kg:80, reps:5}].
+      직전 세트 대비 15% 이상 증량이면 응답에 heavy_jump_warning — 호출 AI 가 사용자에게 그대로 전달.
+      최고 무게가 current_pr_kg 갱신하면 자동 update.
     inputSchema:
       type: object
-      required: [slug]
+      required: [exercise_slug, sets]
       properties:
-        slug:
+        exercise_slug:
           type: string
-          description: "복용한 영양제의 slug. supplement:{slug} 정의가 미리 있어야 함."
-        date:
-          type: string
-          description: "복용 날짜 YYYY-MM-DD. 생략하면 사용자 timezone 기준 오늘."
-        slot:
-          type: string
-          description: "복용한 슬롯 'HH:MM'. 정의된 schedule_times 중 하나여야 함. 생략 시 현재 시간에 가장 가까운 슬롯."
-        taken_at:
-          type: string
-          description: "실제 복용 시각 ISO timestamp. 생략하면 현재."
+          description: "set_exercise 로 등록된 슬러그."
+        sets:
+          type: array
+          description: |
+            세트 배열. 각 원소 { weight_kg: number (봉 포함 kg), reps: integer, rir?: integer (Reps In Reserve 0-5) }.
         note:
           type: string
 
-  # ─────────────────────────────────────────────────────────────────────
-  # 첫 사용 프로필 일괄 저장 ⭐
-  # ─────────────────────────────────────────────────────────────────────
-  - name: init_user_profile
+  # ═══════════════════════════════════════════════════════════════════
+  # 비루틴 활동 (산책·축구·자전거 등)
+  # ═══════════════════════════════════════════════════════════════════
+  - name: record_activity
     description: |
-      마도서 첫 사용 시 사용자 영구 프로필 (목표 체중·PR·4대 목표·활동계수·헬스장 봉 무게 등) 을 한 번에 저장.
-      호출 AI 는 (a) get_state 의 missing_settings 가 비어 있지 않거나
-      (b) 사용자가 처음 마도서를 호출했다고 판단되면 사용자에게 친근하게 물어보고 이 함수로 일괄 저장.
-      모든 인자 optional — 사용자가 모르거나 안 말하면 비워도 됨. 반환값 still_missing 으로 남은 항목 확인.
-      한 번에 다 받지 못해도 OK — 다음 대화에서 다시 호출하면 인자만 머지 update (idempotent).
-      시간별 측정값 (체중·InBody·혈액검사·운동 세션) 은 record_* 함수로 별도 입력.
+      비루틴 신체 활동 한 건 기록. "어제 축구 1시간 했어" / "오늘 산책 30분" / "자전거 20km" 처리.
+      name 은 자유 텍스트 (snake_case 강제 X). duration_min / intensity / distance_km 모두 선택.
+      get_state 의 recent_activities 와 대시보드에 표시.
     inputSchema:
       type: object
+      required: [name]
       properties:
-        target_weight_min:
-          type: number
-          description: 목표 체중 하한 kg.
-        target_weight_max:
-          type: number
-          description: 목표 체중 상한 kg.
-        target_weight_rule:
+        name:
           type: string
-          description: "'always_in_range' | 'fasted_only' | 'daily_average'. 기본 always_in_range."
-        activity_factor:
+          description: "활동 이름 자유 텍스트. 예: '축구', '산책', '자전거', '등산'."
+        duration_min:
           type: number
-          description: BMR 곱셈 활동계수. 1.2(좌식)/1.375(가벼움)/1.55(중간)/1.725(높음)/1.9(매우높음).
-        pr_squat_kg:
-          type: number
-          description: 스쿼트 1RM kg.
-        pr_bench_press_kg:
-          type: number
-          description: 벤치프레스 1RM kg.
-        pr_shoulder_press_kg:
-          type: number
-          description: 숄더프레스 1RM kg.
-        pr_deadlift_kg:
-          type: number
-          description: 데드리프트 1RM kg.
-        four_goals:
-          type: array
-          description: |
-            추구하는 운동·체력 목표 슬러그 배열 (snake_case 영문). 최대 8개.
-            예 ['futsal_soccer', 'taekwondo', 'thigh_power', 'upper_body_maintenance'].
-        next_blood_panel_target:
+          description: "소요 시간 분."
+        intensity:
           type: string
-          description: 다음 혈액검사 예정 시기 자유 문자열. 예 '2026-06 ~ 2026-07'.
-        timezone:
+          description: "'low' (걷기 수준) | 'moderate' (조깅·축구) | 'high' (전력질주·인터벌)."
+        distance_km:
+          type: number
+        performed_at:
           type: string
-          description: IANA timezone. 기본 'Asia/Seoul'. 해외 거주/출장 시 변경.
-        supplement_window_minutes:
-          type: integer
-          description: 영양제 알림 윈도우 분. 기본 30.
+          description: "ISO timestamp. 생략하면 현재. 사용자가 '어제' 라 하면 그에 맞춰 채울 것."
+        note:
+          type: string
 
-  # ─────────────────────────────────────────────────────────────────────
-  # 현재 상태 종합 스냅샷 ⭐
-  # ─────────────────────────────────────────────────────────────────────
-  - name: get_state
+  # ═══════════════════════════════════════════════════════════════════
+  # 건강지표 — AI 가 목표 기반으로 정의 → 사용자 합의 → 등록
+  # ═══════════════════════════════════════════════════════════════════
+  - name: set_metric
     description: |
-      사용자의 현재 운동·식단·건강 상태 스냅샷을 돌려준다.
-      운동·식단·체중 관련 추천을 하기 전에 반드시 먼저 호출할 것.
-      빈 추론으로 메모리를 채우지 말고, 이 함수로 사실을 먼저 확보한다.
-      반환값에는 마지막 세션 무게, 활성 부상, 목표 체중 규칙(식후 포함 여부),
-      최근 혈액검사 플래그(LDL/요산/비타민D), 4대 운동 목표가 포함된다.
-      사용자 메모리 시스템과 별개로 유지되는 정직한 외장 기억이다.
+      건강지표 정의 한 건 등록·수정 (upsert). 마도서가 추적할 지표는 사용자별로 완전히 다름:
+      당뇨인은 fasting_glucose / post_meal_glucose / hba1c, 근비대 추구자는 body_weight / body_fat_pct / skeletal_muscle_kg,
+      고혈압인은 systolic_bp / diastolic_bp ... 등.
+      이 함수는 사용자가 합의한 지표만 등록 — 호출 AI 가 멋대로 등록 금지.
+      target_min / target_max 는 의학 가이드라인이 아니라 사용자 목표 기준 — 사용자가 명시한 값만 사용.
+      priority: critical (매일 추적) / high (주간) / normal (월간 이하).
+    inputSchema:
+      type: object
+      required: [slug, display_name, unit, priority]
+      properties:
+        slug:
+          type: string
+          description: "snake_case. 예: 'body_weight', 'fasting_glucose', 'ldl_mg_dl', 'resting_heart_rate'."
+        display_name:
+          type: string
+        unit:
+          type: string
+          description: "측정 단위 자유 텍스트. 예: 'kg', 'mg/dL', '%', 'bpm', 'mmHg'."
+        target_min:
+          type: number
+          description: "사용자 목표 하한. 생략하면 하한 없음."
+        target_max:
+          type: number
+          description: "사용자 목표 상한. 생략하면 상한 없음."
+        priority:
+          type: string
+          description: "'critical' (매일) | 'high' (주간) | 'normal' (월간 이하)."
+        frequency_hint:
+          type: string
+          description: "측정 빈도 자유 텍스트 힌트. 예: 'daily_morning_fasted', 'weekly', 'quarterly'."
+
+  - name: list_metrics
+    description: |
+      등록된 건강지표 전체 + 각각의 최근값 + target 평가 + 측정 카운트.
+      "내 혈당 어때?" / "최근 측정 뭐 있어?" 류 질문 전에 호출.
     inputSchema:
       type: object
       properties: {}
 
-  # ─────────────────────────────────────────────────────────────────────
-  # 다음 세션 무게 계산 ⭐
-  # ─────────────────────────────────────────────────────────────────────
-  - name: compute_next_load
+  - name: delete_metric
     description: |
-      해당 운동의 다음 세션 권장 무게를 검증된 공식으로 계산.
-      Plotkin 2022 / Refalo 2024 / 주당 2-5% 증량 가이드라인 / RIR off-target 1당 약 4% 보정 /
-      부상 후 복귀 초기 RPE 4-6 — 이 다섯 출처만 사용. 호출 AI 는 반환된 weight/phase/rationale 을
-      사용자에게 그대로 전달하고, 자체적으로 무게를 더하거나 빼지 말 것.
-      phase 자동 판단: 부상 회복 30일 이내 → return_from_injury,
-      RIR ≤ 0 또는 condition ≤ 4 → deload, 3주 이상 같은 무게 → plateau_break, 그 외 → normal_progression.
-      4대 운동 목표 부합 여부 검증은 호출 AI 책임.
+      건강지표 정의 영구 삭제. 과거 측정 기록은 보존.
     inputSchema:
       type: object
-      required: [exercise_name]
+      required: [slug]
       properties:
-        exercise_name:
+        slug: { type: string }
+
+  - name: record_metric
+    description: |
+      건강지표 측정 한 건 기록. slug 는 set_metric 으로 등록된 것 필수.
+      반환값에 in_target_range, delta_from_previous, delta_from_7d_avg 포함 —
+      호출 AI 는 이걸 보고 사용자에게 사실만 전달. 단정·진단 금지.
+      context 는 자유 텍스트: 'fasted_morning', 'post_run', 'with_meal' 등 측정 맥락.
+    inputSchema:
+      type: object
+      required: [slug, value]
+      properties:
+        slug:
           type: string
-          description: "마지막 세션 기록과 매칭할 운동명 (snake_case)."
+          description: "set_metric 로 등록된 슬러그."
+        value:
+          type: number
+        measured_at:
+          type: string
+          description: "ISO timestamp. 생략하면 현재."
+        context:
+          type: string
+          description: "측정 맥락 자유 텍스트."
+        note:
+          type: string
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 식단 — 칼로리·매크로 추적이 필요한 사용자만 사용
+  # ═══════════════════════════════════════════════════════════════════
+  - name: record_meal
+    description: |
+      식단 한 끼 기록. 모든 영양 필드 선택 — 사용자가 추적하는 것만 채움 (이름만 기록도 OK).
+      사진 받으면 호출 AI 가 사진 분석 → 사용자 컨펌 → 그 결과만 이 함수로. 컨펌 없이 추정 금지.
+      반환값에 오늘 누적 (kcal / protein_g / carbs_g / fat_g) 포함 — 그 날 추세 파악용.
+      칼로리 유지·결핍·잉여 해석은 get_state 의 maintenance_estimate (BMR metric + activity_factor 합의된 경우) 기준.
+    inputSchema:
+      type: object
+      properties:
+        kcal: { type: number }
+        protein_g: { type: number }
+        carbs_g: { type: number }
+        fat_g: { type: number }
+        name:
+          type: string
+          description: "음식 이름. 한국어 자유 텍스트. 예: '연어 샐러드'."
+        note:
+          type: string
+        eaten_at:
+          type: string
+          description: "ISO timestamp. 생략하면 현재."
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Reminder — 영양제·약·측정·행동 통합 알람
+  # ═══════════════════════════════════════════════════════════════════
+  - name: set_reminder
+    description: |
+      알람 정의 한 건 등록·수정 (upsert). 영양제 / 약 복용, 혈당·혈압 측정, 인슐린 주사 같은 행동
+      모두 이 한 통로로 처리 — 도메인별 별도 알람 X.
+      type 으로 분류: 'supplement' / 'measurement' / 'action'.
+      schedule_times 안에 들면 슬롯 시각 ± window_minutes 안에 record_reminder_ack 없으면 Web Push 1회.
+      윈도우 놓치면 그 슬롯은 영원히 알림 안 옴 (잔소리 방지) — 다음 슬롯에서 새로 시작.
+      every_n_days 로 격일·주1회 가능. start_date / end_date 로 한시 복용약 표현.
+    inputSchema:
+      type: object
+      required: [slug, display_name, schedule_times, type]
+      properties:
+        slug:
+          type: string
+          description: "snake_case. 예: 'vitamin_d', 'insulin_basal', 'morning_glucose_check', 'evening_stretch'."
+        display_name:
+          type: string
+        schedule_times:
+          type: array
+          description: "'HH:MM' 24h 배열. 예: ['09:00'] 또는 ['07:00','12:00','19:00']."
+        every_n_days:
+          type: integer
+          description: "복용·실행 주기. 1=매일 (기본), 2=격일, 7=주1회."
+        window_minutes:
+          type: integer
+          description: "슬롯 시각 + N분 윈도우. 기본 30."
+        type:
+          type: string
+          description: "'supplement' (영양제·약) | 'measurement' (혈당·혈압 측정) | 'action' (스트레칭·주사 등 행동)."
+        notes:
+          type: string
+          description: "알림 body 에 함께 표시될 자유 메모. 예: '식사 후', '1캡슐', '왼팔 피하주사'."
+        start_date:
+          type: string
+          description: "YYYY-MM-DD. 이 날짜 전엔 알림 안 옴."
+        end_date:
+          type: string
+          description: "YYYY-MM-DD. 이 날짜 후엔 알림 안 옴. 한시 복용약에 유용."
+
+  - name: list_reminders
+    description: |
+      활성 알람 전체 + 오늘 각 슬롯 ack 카운트. end_date 지난 건 제외.
+      "오늘 뭐 남았어?" / "지금 챙겨야 할 거 있어?" 류 질문 전 호출.
+    inputSchema:
+      type: object
+      properties: {}
+
+  - name: delete_reminder
+    description: |
+      알람 정의 영구 삭제. 과거 ack 기록은 보존.
+      일시 중단이면 end_date 추가가 더 안전.
+    inputSchema:
+      type: object
+      required: [slug]
+      properties:
+        slug: { type: string }
+
+  - name: record_reminder_ack
+    description: |
+      알람 응답 한 건 기록. 사용자가 "비타민D 방금 먹었어" / "혈당 측정했어" 보고하면 호출.
+      slot_iso 가 윈도우 안이면 해당 슬롯 알림이 자동으로 안 나감 (1회 정책).
+      slot_iso 생략하면 현재 시각 기준 가장 가까운 슬롯 자동 매칭.
+      윈도우 밖이면 'off_schedule' 로 기록 — 기록은 되지만 다음 슬롯은 정상 감시.
+    inputSchema:
+      type: object
+      required: [slug]
+      properties:
+        slug:
+          type: string
+        slot_iso:
+          type: string
+          description: "응답한 슬롯의 ISO. 생략 시 자동 매칭."
+        note:
+          type: string
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 조회 / 계산
+  # ═══════════════════════════════════════════════════════════════════
+  - name: get_state
+    description: |
+      마도서 종합 상태 스냅샷. 호출 AI 는 어떤 응답·추천 전에도 반드시 먼저 호출.
+      반환:
+        - goal              : 자연어 목표 (null 이면 set_goal 먼저)
+        - exercises         : 등록 루틴 + last_session
+        - recent_sessions   : 최근 7개 세션
+        - recent_activities : 최근 7개 비루틴 활동
+        - metrics           : 등록 지표 + latest_value + in_target_range
+        - meals_today       : 오늘 식단 + 누적 + maintenance_estimate (조건부)
+        - reminders         : 활성 알람 + 오늘 ack 카운트
+        - next_reminder_slot: 다음 미 ack 슬롯
+        - missing_setup     : 비어있는 필수 항목
+        - stale_records     : 14일+ 측정 없는 지표
+        - meta              : AI 행동 규약 (protocol_step / next_recommended_action / ai_should_not / goal_coherence_hint)
+      meta.protocol_step:
+        - awaiting_goal           : set_goal 부터
+        - awaiting_initial_setup  : propose_setup_from_goal → set_*
+        - operational             : 정상 운영
+    inputSchema:
+      type: object
+      properties: {}
+
+  - name: compute_next_load
+    description: |
+      등록된 루틴 운동의 다음 세션 권장 무게 계산. 검증된 공식만 사용:
+        - Helms RIR off-target 1당 약 4% 보정
+        - Plotkin 2022 주간 5% 증량 상한
+        - Refalo 2024 isolation 계수 ×0.7
+      호출 AI 는 반환된 weight / phase / reasoning / sources 를 사용자에게 그대로 전달.
+      자체적으로 무게 가감 금지. 등록 안 된 운동·기록 없는 운동은 에러.
+    inputSchema:
+      type: object
+      required: [exercise_slug]
+      properties:
+        exercise_slug:
+          type: string
         target_reps:
           type: integer
-          description: "이번 세션에서 노릴 반복수. 기본 5."
+          description: "이번 세션 목표 반복수. 기본 5."
         target_rir:
           type: integer
           description: "이번 세션 목표 RIR. 기본 2."
-        override_phase:
-          type: string
-          description: "자동 판단 무시. 'return_from_injury' | 'deload' | 'normal_progression' | 'plateau_break'."
 
-# ─────────────────────────────────────────────────────────────────────────
-# 사용자 설정 (호출 AI 에게 노출되는 상수 — 멋대로 해석 차단용)
-# ─────────────────────────────────────────────────────────────────────────
+  - name: propose_setup_from_goal
+    description: |
+      현재 goal description 기반 추천 metric / exercise / reminder 셋업.
+      LLM 호출 없는 키워드 매칭 (당뇨·근비대·다이어트·러닝·콜레스테롤·고혈압 등).
+      호출 AI 는 결과를 사용자에게 그대로 보여주고, 사용자가 동의한 항목만 set_* 호출 — 멋대로 등록 X.
+      매칭 안 된 케이스도 generic 추천 (body_weight) 반환 — 빈 응답 X.
+    inputSchema:
+      type: object
+      properties: {}
+
+# ═════════════════════════════════════════════════════════════════════
+# 사용자 설정 — 최소 (timezone 만 필수, 나머지는 사용자별 도메인이 너무 달라서 metric 으로 처리)
+# ═════════════════════════════════════════════════════════════════════
 user_settings:
-  # ─────────────────────────────────────────────────────────────────────
-  # 사용자별 다른 키 (PR/목표/4대목표/다음 채혈일) 는 0 / 빈 배열 / 빈 문자열 디폴트.
-  # 호출 AI 는 get_state.missing_settings 보고 사용자에게 묻거나 init_user_profile 일괄 호출.
-  # 헬스장 표준값·일반 활동계수·timezone 만 통계적 디폴트.
-  # ─────────────────────────────────────────────────────────────────────
-  - key: target_weight_min
-    type: number
-    default: 0
-    description: 목표 체중 하한 kg. 0 이면 미설정 — 호출 AI 가 사용자에게 묻고 update.
-
-  - key: target_weight_max
-    type: number
-    default: 0
-    description: 목표 체중 상한 kg. 0 이면 미설정.
-
-  - key: target_weight_rule
-    type: enum
-    options: [always_in_range, fasted_only, daily_average]
-    default: always_in_range
-    description: |
-      목표 체중 측정 규칙. always_in_range = 식후 포함 측정 시점 무관 항상 범위 안.
-      이 값을 호출 AI 가 멋대로 해석하지 않도록 enum 으로 박는다.
-
-  - key: activity_factor
-    type: number
-    default: 1.4
-    description: BMR 곱셈 활동계수. 1.2(좌식)/1.375(가벼움)/1.55(중간)/1.725(높음)/1.9(매우높음). 사용자 활동량에 맞춰 update.
-
-  - key: pr_squat_kg
-    type: number
-    default: 0
-    description: 스쿼트 1RM kg (프리웨이트 기준). 0 이면 미측정 — 호출 AI 가 사용자에게 묻거나 측정 후 갱신.
-
-  - key: pr_bench_press_kg
-    type: number
-    default: 0
-    description: 벤치프레스 1RM kg. 0 이면 미측정.
-
-  - key: pr_shoulder_press_kg
-    type: number
-    default: 0
-    description: 숄더프레스 1RM kg. 0 이면 미측정.
-
-  - key: pr_deadlift_kg
-    type: number
-    default: 0
-    description: 데드리프트 1RM kg. 0 이면 미측정.
-
-  - key: four_goals
-    type: list_string
-    default: []
-    description: |
-      사용자가 추구하는 운동·체력 목표 슬러그 배열 (snake_case). 예 ['futsal_soccer', 'thigh_power'].
-      빈 배열이면 호출 AI 가 "어떤 몸을 만들고 싶어?" 묻고 채움.
-      compute_next_load 및 호출 AI 추천이 이 목표와 정합한지 검증.
-
-  - key: next_blood_panel_target
-    type: string
-    default: ""
-    description: 다음 혈액검사 예정 시기 자유 문자열 (예 '2026-06 ~ 2026-07'). 비면 미정 — 호출 AI 가 묻고 채움.
-
   - key: timezone
     type: string
     default: "Asia/Seoul"
     description: |
-      알림 시각 판단·오늘 날짜 계산용 IANA timezone. 영양제 알림이 9:00 슬롯이면
-      이 timezone 기준의 9:00 에 워커가 알림 발송. 해외 출장 시 변경.
+      IANA timezone. 알림 시각 판단·오늘 날짜 계산용. 슬롯이 '09:00' 이면 이 timezone 의 9시에 워커가 알림.
+      해외 출장 시 변경.
 
-  - key: supplement_window_minutes
-    type: integer
-    default: 30
+  - key: activity_factor
+    type: number
+    default: null
     description: |
-      영양제 알림 윈도우 (슬롯 시간 + N분). 그 안에 복용 기록 없으면 알림 1회 발송.
-      윈도우 놓치면 그 슬롯은 영원히 알림 안 옴 — 다음 슬롯에서 새로 시작. 기본 30분.
+      BMR 곱셈 활동계수. 1.2(좌식) / 1.375(가벼움) / 1.55(중간) / 1.725(높음) / 1.9(매우높음).
+      null 이면 호출 AI 가 사용자에게 활동량 묻고 update — 임의 가정 금지.
+      get_state.meals_today.maintenance_estimate 는 (BMR metric 등록 + activity_factor 설정) 조건일 때만 계산.
 
-# ─────────────────────────────────────────────────────────────────────────
-# 워커가 5분마다 호출 — 영양제·약 미복용 슬롯 Web Push 알림
-# (AI 가 자기 마음대로 추천하는 알림은 의도적으로 만들지 않음 — 빈 컨텍스트 추천 차단)
-# ─────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+# 워커가 5분마다 호출 — 활성 reminder 중 윈도우 안·미 ack 슬롯 Web Push 발송 (한 번만 정책)
+# ═════════════════════════════════════════════════════════════════════
 notifications:
   function: check_notifications
   cadence: 300
 
-# ─────────────────────────────────────────────────────────────────────────
-# /board 위젯
-# ─────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
+# /board 위젯 — goal + 3축 (운동·건강지표·식단·알람)
+# ═════════════════════════════════════════════════════════════════════
 visualization:
   function: render_dashboard
   cadence: 300
-  height: 480
+  height: 720

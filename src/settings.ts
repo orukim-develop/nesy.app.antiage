@@ -1,27 +1,22 @@
+// __settings 단일 객체. 진짜 필수는 timezone 만.
+// 사용자별 값 (목표·지표 target·운동 PR 등) 은 settings 가 아닌 별도 도메인.
+
 import type { RunCtx, Settings } from './types.ts';
 
-// 상품용 클린 디폴트.
-// 사용자별로 다를 수 있는 PII 성격 키 (목표 체중·PR·4대 목표·다음 채혈일 등) 는
-// 0 / 빈 배열 / 빈 문자열로 시작. 호출 AI 는 get_state.missing_settings 또는 init_user_profile 로
-// 채움. 헬스장 표준값/일반 활동계수/한국 timezone 만 통계적 일반 디폴트.
-const DEFAULTS: Settings = {
-  target_weight_min: 0,
-  target_weight_max: 0,
-  target_weight_rule: 'always_in_range',
-  activity_factor: 1.4,
-  pr_squat_kg: 0,
-  pr_bench_press_kg: 0,
-  pr_shoulder_press_kg: 0,
-  pr_deadlift_kg: 0,
-  four_goals: [],
-  next_blood_panel_target: '',
+export const DEFAULTS: Settings = {
   timezone: 'Asia/Seoul',
-  supplement_window_minutes: 30,
+  activity_factor: null,
 };
 
-// 플랫폼이 manifest user_settings 와 사용자 수정값을 __settings 키로 합쳐 둠.
-// 못 가져오면 DEFAULTS 로 폴백 (개발/테스트 환경).
 export async function getSettings(ctx: RunCtx): Promise<Settings> {
-  const raw = (await ctx.data.get('__settings')) || {};
-  return { ...DEFAULTS, ...raw };
+  const stored = (await ctx.data.get('__settings')) as Partial<Settings> | null;
+  if (!stored) return { ...DEFAULTS };
+  return { ...DEFAULTS, ...stored };
+}
+
+export async function patchSettings(ctx: RunCtx, patch: Partial<Settings>): Promise<Settings> {
+  const cur = await getSettings(ctx);
+  const next = { ...cur, ...patch };
+  await ctx.data.set('__settings', next);
+  return next;
 }

@@ -1,6 +1,7 @@
 // 날짜·문자열·수치 헬퍼. 외부 의존 없음.
 
 export const nowIso = (): string => new Date().toISOString();
+
 export const newId = (): string =>
   (crypto as any).randomUUID().replace(/-/g, '').slice(0, 12);
 
@@ -36,16 +37,29 @@ export function todayIso(tz = 'Asia/Seoul'): string {
   }
 }
 
-export function nowHHMM(tz = 'Asia/Seoul'): string {
+// 'HH:MM' 24시간 형식 in 주어진 timezone
+export function nowHHMMColon(tz = 'Asia/Seoul'): string {
   try {
     const fmt = new Intl.DateTimeFormat('en-GB', {
       timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
     });
-    return fmt.format(new Date()).replace(':', '');
+    return fmt.format(new Date());
   } catch {
     const d = new Date();
-    return String(d.getUTCHours()).padStart(2, '0') + String(d.getUTCMinutes()).padStart(2, '0');
+    return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
   }
+}
+
+// 주어진 timezone 의 현재 시각을 분 단위 정수로 (00:00 = 0, 23:59 = 1439)
+export function nowMinutesInTz(tz = 'Asia/Seoul'): number {
+  const hhmm = nowHHMMColon(tz);
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+}
+
+export function hhmmToMinutes(s: string): number {
+  const [h, m] = s.split(':').map(Number);
+  return h * 60 + m;
 }
 
 // 가장 가까운 step 배수로 반올림 (compute_next_load 의 2.5kg 단위).
@@ -63,14 +77,38 @@ export function escapeHtml(s: string | undefined): string {
     .replace(/'/g, '&#39;');
 }
 
-// prefix 안의 모든 row 를 한 번에 가져옴 — value 포함.
-// 플랫폼 contract: data.list 는 [{key, value, updated_at}]. 절대 list 뒤에 N 개 get 부르지 말 것.
-// 1000 cap 잘림 대비 페이징.
-export interface ListedRow {
-  key: string;
-  value: any;
-  updated_at: string;
+// ───── 검증 헬퍼 ─────
+
+export const SLUG_RE = /^[a-z][a-z0-9_]*$/;
+export const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export function assertSlug(slug: unknown, field = 'slug'): asserts slug is string {
+  if (typeof slug !== 'string' || !SLUG_RE.test(slug)) {
+    throw new Error(`${field} 는 snake_case 영문 시작 (받음: ${JSON.stringify(slug)})`);
+  }
 }
+
+export function assertHHMM(t: unknown, field = 'time'): asserts t is string {
+  if (typeof t !== 'string' || !HHMM_RE.test(t)) {
+    throw new Error(`${field} 는 'HH:MM' 24시간 형식 (받음: ${JSON.stringify(t)})`);
+  }
+}
+
+export function assertPositiveNumber(v: unknown, field: string, max = Infinity): asserts v is number {
+  if (typeof v !== 'number' || !isFinite(v)) throw new Error(`${field} 는 숫자 필요 (받음: ${JSON.stringify(v)})`);
+  if (v < 0) throw new Error(`${field} 음수 불가 (받음: ${v})`);
+  if (v > max) throw new Error(`${field} 비현실적으로 큼 (max ${max}, 받음: ${v})`);
+}
+
+export function assertEnum<T extends string>(v: unknown, allowed: readonly T[], field: string): asserts v is T {
+  if (typeof v !== 'string' || !allowed.includes(v as T)) {
+    throw new Error(`${field} 는 ${allowed.join(' | ')} 중 하나 (받음: ${JSON.stringify(v)})`);
+  }
+}
+
+// prefix 안의 모든 row 페이징해서 한 번에. value 포함.
+export interface ListedRow { key: string; value: any; updated_at: string }
 
 export async function listAllRows(
   data: { list(prefix?: string, limit?: number): Promise<ListedRow[]> },
