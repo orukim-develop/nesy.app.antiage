@@ -18,7 +18,8 @@ tools:
     description: |
       progressive overload 대상 루틴 운동을 등록한다 (squat, bench_press, deadlift, overhead_press, lat_pulldown 등).
       같은 slug 가 있으면 덮어쓴다.
-      category 는 next_weight 계산 시 증량 단위에 영향 — compound 2.5kg, isolation 1.25kg.
+      category 는 next_weight 의 기본 증량 단위에 영향 — compound 2.5kg, isolation 1.25kg.
+      compound 의 경우 `fact:exercise:min_plate_increment_kg` (define_user_fact 로 `{ v: ... }`) 가 등록되어 있으면 그 값이 우선.
       AI 는 사용자와 합의된 운동만 등록 (임의 등록 금지).
     inputSchema:
       type: object
@@ -42,17 +43,6 @@ tools:
           type: number
           description: "선택. 주당 최대 증량(kg). 생략하면 무제한. 과도한 증량 방지용."
       required: [slug, display_name, category, unit]
-
-  - name: delete_routine_exercise
-    description: |
-      루틴 운동 정의를 삭제한다. 과거 세션 기록은 남는다.
-      사용자가 명시적으로 "지워줘"라고 한 경우에만 호출.
-    inputSchema:
-      type: object
-      properties:
-        slug:
-          type: string
-      required: [slug]
 
   - name: log_routine_session
     description: |
@@ -104,11 +94,13 @@ tools:
     description: |
       추적할 건강 지표를 등록한다.
       당뇨인은 fasting_glucose / post_meal_glucose / hba1c,
-      근비대 추구자는 body_weight_kg / body_fat_pct / skeletal_muscle_kg / bmr,
-      고혈압 환자는 systolic_bp / diastolic_bp / resting_hr —
+      체성분 추적은 body_weight_kg / body_fat_pct / skeletal_muscle_kg,
+      고혈압은 systolic_bp / diastolic_bp / resting_hr —
       사람마다 다른 슬러그. AI 는 goal 을 읽고 합의된 지표만 등록 (임의 등록 금지).
       target_min/max 는 선택 — 정확한 정상범위 알 때만, 모르면 생략.
       priority=critical 은 위젯/요약에서 상위 표시 + 범위 이탈 시 강조.
+
+      참고: 기초대사량(BMR)·나이는 별도 지표 등록 불필요 — height_cm/sex/birth_year 설정 + body_weight_kg 측정이 있으면 Mifflin-St Jeor 로 자동 계산되어 get_state.derived 에 포함.
     inputSchema:
       type: object
       properties:
@@ -120,7 +112,7 @@ tools:
           description: 사용자에게 보일 이름 (한글 가능).
         unit:
           type: string
-          description: "단위 문자열. mg/dL, kg, %, mmHg, bpm, kcal 등."
+          description: "단위 문자열. mg/dL, kg, %, mmHg, bpm 등."
         target_min:
           type: number
           description: 선택. 정상범위 하한.
@@ -131,17 +123,6 @@ tools:
           type: string
           description: "critical / high / normal 중 하나."
       required: [slug, display_name, unit, priority]
-
-  - name: delete_metric
-    description: |
-      지표 정의를 삭제한다. 과거 측정 기록은 남는다.
-      사용자가 명시적으로 "지워줘"라고 한 경우에만 호출.
-    inputSchema:
-      type: object
-      properties:
-        slug:
-          type: string
-      required: [slug]
 
   - name: record_metric
     description: |
@@ -167,7 +148,7 @@ tools:
     description: |
       끼 한 건을 기록한다. name 만 필수, 영양 필드(kcal/protein_g/carbs_g/fat_g)는 모두 선택 — AI 가 사용자 발화에서 추정/보조.
       반환에 오늘(settings.timezone 기준) 끼 합계 포함.
-      activity_factor>0 이고 BMR 지표(slug `bmr`)가 등록되어 있으면 maintenance 비교(today_delta_kcal)도 포함.
+      activity_factor>0 이고 BMR 자동 계산 조건(height_cm>0, sex≠unspecified, birth_year>0, body_weight_kg 측정 1건 이상)을 모두 충족하면 maintenance 비교(today_delta_kcal)도 포함.
     inputSchema:
       type: object
       properties:
@@ -216,15 +197,6 @@ tools:
           description: "선택. measurement 일 때 어떤 metric 의 측정인지. ack 시 value 같이 주면 자동 record_metric 호출."
       required: [id, kind, label, schedule]
 
-  - name: delete_reminder
-    description: 알람을 삭제한다.
-    inputSchema:
-      type: object
-      properties:
-        id:
-          type: string
-      required: [id]
-
   - name: ack_reminder
     description: |
       알람 슬롯에 대한 acknowledge 를 기록한다.
@@ -244,27 +216,88 @@ tools:
           description: "선택. measurement 알람일 때 같이 들어온 측정값."
       required: [id]
 
+  - name: define_user_fact
+    description: |
+      4축 카테고리 중 하나에 사용자에 대한 자유 형식 사실(fact)을 저장한다.
+      마도서가 사전에 정의할 수 없는 정보(헬스장 장비/바 무게, 의수·의족, 알레르기, 복용약, 식단 제약, 직업·수면 등) 를 AI 가 분류해서 적재한다.
+
+      축:
+        exercise — 운동 환경/장비/제약. 예: 최소 plate 증분 (slug `min_plate_increment_kg`, value `{ v: 2.5 }` — next_weight 가 이 값을 increment 로 자동 사용), 사용 가능한 기구 목록, 왼팔 의족 등 신체적 제한
+        health_metric — 알레르기, 복용 약물, 만성질환, 가족력
+        diet_reminder — 식단 제약(비건/저탄수/케토), 카페인·알코올 한도, 단식 윈도우
+        baseline — 변하지 않거나 천천히 변하는 본인 정보. 직업, 평균 수면 시간, 흡연·음주 상태, 거주 도시
+
+      AI 가 지켜야 할 절차 (위반 시 사용자 신뢰 손상):
+        1. 사용자 발화에서 사실 후보를 식별
+        2. "이거 [축이름] 카테고리에 [라벨]로 넣을게요" 라고 사용자에게 명시
+        3. 사용자 합의를 받은 뒤에만 호출
+        4. 축이 모호하면 "A 또는 B, 어느 쪽?" 사용자에게 직접 질문 — AI 단독 결정 금지
+
+      value 는 항상 object 로 저장. 스칼라(숫자/문자열/불린)는 `{ v: 값 }` 으로 감싼다 — next_weight 등 마도서 내부 로직이 v 키를 기대.
+      목록은 `{ items: [...] }`, 구조체는 자유 키.
+      같은 (axis, slug) 면 덮어쓴다.
+    inputSchema:
+      type: object
+      properties:
+        axis:
+          type: string
+          description: "exercise / health_metric / diet_reminder / baseline 중 하나."
+        slug:
+          type: string
+          description: "snake_case 식별자. 예 min_plate_increment_kg / left_arm_prosthetic / peanut_allergy / diet_vegan."
+        label:
+          type: string
+          description: "사용자에게 보일 한글/자유 라벨. 예 '최소 plate 증분', '왼팔 의족', '땅콩 알레르기'."
+        value:
+          type: object
+          additionalProperties: true
+          description: "임의 구조. 스칼라는 { v: ... } 로 감싸기. 예 { v: 2.5 }, { items: ['땅콩','갑각류'] }, { side: 'left', since: '2020' }."
+      required: [axis, slug, label, value]
+
+  - name: delete_entity
+    description: |
+      등록된 entity 를 삭제한다. routine / metric / reminder / fact 통합 삭제.
+      사용자가 명시적으로 "지워줘" 라고 한 경우에만 호출.
+      과거 기록(세션/측정/식단/ack)은 남는다.
+    inputSchema:
+      type: object
+      properties:
+        kind:
+          type: string
+          description: "routine / metric / reminder / fact 중 하나."
+        id:
+          type: string
+          description: "삭제 대상 식별자. routine/metric/fact 는 slug, reminder 는 reminder id."
+        axis:
+          type: string
+          description: "kind=fact 일 때만 필수. exercise / health_metric / diet_reminder / baseline 중 하나."
+      required: [kind, id]
+
   - name: get_state
     description: |
       마도서의 현재 상태를 통째로 반환한다 — 응답·추천에 앞서 반드시 호출.
       반환:
         - protocol_step: 'awaiting_goal' / 'awaiting_initial_setup' / 'operational'
-        - ai_rules: AI 가 매 응답마다 지켜야 할 규약 (빈 추론 금지, 시각은 timezone 기준, 의학적 진단 흉내 금지 등)
+        - ai_rules: AI 가 매 응답마다 지켜야 할 규약 (빈 추론 금지, 시각은 timezone 기준, 의학적 진단 흉내 금지, user_fact 축 합의 절차 등)
         - recommended_next_action: 현 단계에서 AI 가 다음으로 해야 할 행동의 짧은 힌트
         - goal: { text, updated_at } 또는 null
-        - settings: { timezone, activity_factor }
+        - settings: { timezone, activity_factor, height_cm, sex, birth_year }
         - server_now / server_now_local: 추측 금지용 서버 기준 시각
+        - derived: { age, bmr, bmr_source, maintenance_kcal } — settings + 최근 body_weight_kg 로 자동 계산 (조건 불충족 필드는 null)
         - metrics: 등록 지표들 + 각각의 최근 측정값 + target 평가 + 7일 평균 + 샘플 수
         - routines: 등록 루틴들 + 각각의 최근 세션
         - recent_activities: 최근 7일 비루틴 활동
         - meals_today: 오늘(timezone 기준) 끼 합계 + 항목
         - reminders: 등록 알람들 + 오늘 슬롯별 상태(future/due/acked/missed)
+        - user_facts: { exercise, health_metric, diet_reminder, baseline } — 축별 fact 묶음
       list_* 함수 대신 이 함수가 모든 조회를 커버한다.
 
   - name: next_weight
     description: |
       특정 루틴 운동의 다음 세션 추천 무게를 계산해서 반환한다.
-      직전 세션의 평균 RIR 과 default_rir_target 비교 → compound 2.5kg / isolation 1.25kg 단위 증감.
+      직전 세션의 평균 RIR 과 default_rir_target 비교 → 기본 단위로 증감.
+      기본 increment: compound 2.5kg, isolation 1.25kg.
+      compound 의 경우 `fact:exercise:min_plate_increment_kg` (value.v) 가 있으면 그 값으로 대체.
       weekly_cap_kg 가 설정되어 있으면 최근 7일 증량 누계가 cap 을 넘지 않도록 보호.
       세션 기록이 없으면 next_weight=null + reason 반환.
     inputSchema:
@@ -278,7 +311,7 @@ tools:
     description: |
       goal 문장에 자주 동반되는 검증된 초기 셋업 템플릿을 반환한다 — '추천'이 아닌 '템플릿 사전'.
       예: goal 에 '당뇨' → fasting_glucose/post_meal_glucose/hba1c 지표 + 아침 공복 혈당 측정 알람 같은 표준 묶음.
-      반환된 템플릿은 AI 가 사용자에게 그대로 제시 → 사용자 합의 → define_metric/define_reminder/define_routine_exercise 로 실제 등록.
+      반환된 템플릿은 AI 가 사용자에게 그대로 제시 → 사용자 합의 → define_metric / define_reminder / define_routine_exercise / define_user_fact 로 실제 등록.
       마도서가 임의 등록하지 않는다 — 호출 결과는 단순 후보일 뿐.
 
 user_settings:
@@ -289,7 +322,19 @@ user_settings:
   - key: activity_factor
     type: number
     default: 0
-    description: "BMR 곱셈 계수 (1.2~1.9). 0 = 합의 전(비활성). BMR 지표와 함께 등록되면 식단 maintenance 비교에 사용."
+    description: "BMR 곱셈 계수 (1.2~1.9). 0 = 합의 전(비활성). >0 이고 BMR 자동 계산 조건 충족 시 식단 maintenance 비교 자동 활성."
+  - key: height_cm
+    type: number
+    default: 0
+    description: "신장 cm. 0 = 미설정. BMR 자동 계산에 필요."
+  - key: sex
+    type: string
+    default: "unspecified"
+    description: "male / female / unspecified 중 하나. BMR 자동 계산(Mifflin-St Jeor)에 필요."
+  - key: birth_year
+    type: integer
+    default: 0
+    description: "출생년도(서기). 0 = 미설정. BMR 자동 계산 시 나이 산출에 필요."
 
 notifications:
   function: check_reminders

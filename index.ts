@@ -5,6 +5,9 @@ type Data = {
   list: (prefix?: string, limit?: number) => Promise<Array<{ key: string; value: any; updated_at: string }>>;
 };
 
+const FACT_AXES = ["exercise", "health_metric", "diet_reminder", "baseline"] as const;
+type FactAxis = typeof FACT_AXES[number];
+
 const AI_RULES = [
   "응답·추천 전 반드시 get_state 호출.",
   "goal 이 비어있으면 set_goal 부터.",
@@ -13,6 +16,9 @@ const AI_RULES = [
   "시각·날짜는 settings.timezone 기준 — 추측 금지.",
   "의학적 진단·처방 흉내 금지.",
   "응답 전 goal 문장을 다시 읽고 사용자 발화와 정합성 검증.",
+  "user_fact 등록 전 반드시 사용자에게 '[축이름] 카테고리에 [라벨]로 넣을게요' 라고 명시 후 합의 받기.",
+  "축이 모호하면 사용자에게 'A 또는 B, 어느 쪽?' 직접 질문 — AI 단독 결정 금지.",
+  "BMR 은 별도 metric 등록 불필요 — height_cm/sex/birth_year + body_weight_kg 측정으로 자동 계산되어 derived 에 들어옴.",
 ];
 
 export async function run({ input, data }: {
@@ -24,16 +30,15 @@ export async function run({ input, data }: {
   switch (tool) {
     case "set_goal": return setGoal(args, data);
     case "define_routine_exercise": return defineRoutine(args, data);
-    case "delete_routine_exercise": return deleteRoutine(args, data);
     case "log_routine_session": return logSession(args, data);
     case "log_activity": return logActivity(args, data);
     case "define_metric": return defineMetric(args, data);
-    case "delete_metric": return deleteMetric(args, data);
     case "record_metric": return recordMetric(args, data);
     case "log_meal": return logMeal(args, data);
     case "define_reminder": return defineReminder(args, data);
-    case "delete_reminder": return deleteReminder(args, data);
     case "ack_reminder": return ackReminder(args, data);
+    case "define_user_fact": return defineUserFact(args, data);
+    case "delete_entity": return deleteEntity(args, data);
     case "get_state": return getState(data);
     case "next_weight": return nextWeight(args, data);
     case "suggest_setup": return suggestSetup(data);
@@ -45,9 +50,13 @@ export async function run({ input, data }: {
 
 async function getSettings(data: Data) {
   const s = await data.get("__settings");
+  const sex = typeof s?.sex === "string" && ["male", "female", "unspecified"].includes(s.sex) ? s.sex : "unspecified";
   return {
     timezone: (typeof s?.timezone === "string" && s.timezone) || "Asia/Seoul",
     activity_factor: typeof s?.activity_factor === "number" ? s.activity_factor : 0,
+    height_cm: typeof s?.height_cm === "number" ? s.height_cm : 0,
+    sex,
+    birth_year: typeof s?.birth_year === "number" ? s.birth_year : 0,
   };
 }
 
@@ -92,6 +101,50 @@ function evalTarget(value: number, min: number | null, max: number | null): bool
   return null;
 }
 
+function computeMifflinStJeor(weight_kg: number, height_cm: number, age: number, sex: string): number | null {
+  if (!Number.isFinite(weight_kg) || weight_kg <= 0) return null;
+  if (!Number.isFinite(height_cm) || height_cm <= 0) return null;
+  if (!Number.isFinite(age) || age <= 0) return null;
+  if (sex !== "male" && sex !== "female") return null;
+  const base = 10 * weight_kg + 6.25 * height_cm - 5 * age;
+  return sex === "male" ? base + 5 : base - 161;
+}
+
+async function computeDerived(settings: any, data: Data) {
+  const currentYear = new Date().getFullYear();
+  const age = settings.birth_year > 0 ? currentYear - settings.birth_year : null;
+  const baseEmpty = { age, bmr: null, bmr_source: null, maintenance_kcal: null };
+
+  if (settings.height_cm <= 0) return baseEmpty;
+  if (age === null) return baseEmpty;
+  if (settings.sex !== "male" && settings.sex !== "female") return baseEmpty;
+
+  const measurements = (await data.list("measure:body_weight_kg:"))
+    .map(r => r.value).filter(nonNull)
+    .sort((a: any, b: any) => String(a.measured_at).localeCompare(String(b.measured_at)));
+  const latest: any = measurements.at(-1);
+  if (!latest) return baseEmpty;
+
+  const bmrRaw = computeMifflinStJeor(latest.value, settings.height_cm, age, settings.sex);
+  if (bmrRaw === null) return baseEmpty;
+  const bmr = Math.round(bmrRaw);
+  const maintenance_kcal = settings.activity_factor > 0 ? Math.round(bmr * settings.activity_factor) : null;
+
+  return {
+    age,
+    bmr,
+    bmr_source: {
+      formula: "Mifflin-St Jeor",
+      weight_kg: latest.value,
+      height_cm: settings.height_cm,
+      age,
+      sex: settings.sex,
+      measured_at: latest.measured_at,
+    },
+    maintenance_kcal,
+  };
+}
+
 async function setGoal(args: any, data: Data) {
   const text = String(args.text ?? "").trim();
   if (!text) throw new Error("text 필수.");
@@ -118,11 +171,6 @@ async function defineRoutine(args: any, data: Data) {
   };
   await data.set(`routine:${slug}`, routine);
   return { routine };
-}
-
-async function deleteRoutine(args: any, data: Data) {
-  const slug = String(args.slug ?? "");
-  return { deleted: await data.delete(`routine:${slug}`), slug };
 }
 
 async function logSession(args: any, data: Data) {
@@ -186,11 +234,6 @@ async function defineMetric(args: any, data: Data) {
   };
   await data.set(`metric:${slug}`, metric);
   return { metric };
-}
-
-async function deleteMetric(args: any, data: Data) {
-  const slug = String(args.slug ?? "");
-  return { deleted: await data.delete(`metric:${slug}`), slug };
 }
 
 async function recordMetric(args: any, data: Data) {
@@ -258,17 +301,14 @@ async function logMeal(args: any, data: Data) {
 
   let maintenance: any = null;
   if (settings.activity_factor > 0) {
-    const bmrs = (await data.list("measure:bmr:"))
-      .map(r => r.value).filter(nonNull)
-      .sort((a: any, b: any) => String(a.measured_at).localeCompare(String(b.measured_at)));
-    const latest: any = bmrs.at(-1);
-    if (latest) {
-      const m = latest.value * settings.activity_factor;
+    const derived = await computeDerived(settings, data);
+    if (derived.bmr !== null && derived.maintenance_kcal !== null) {
       maintenance = {
-        bmr: latest.value,
+        bmr: derived.bmr,
+        bmr_source: derived.bmr_source,
         activity_factor: settings.activity_factor,
-        maintenance_kcal: Math.round(m),
-        today_delta_kcal: today_totals.kcal !== null ? Math.round(today_totals.kcal - m) : null,
+        maintenance_kcal: derived.maintenance_kcal,
+        today_delta_kcal: today_totals.kcal !== null ? today_totals.kcal - derived.maintenance_kcal : null,
       };
     }
   }
@@ -296,11 +336,6 @@ async function defineReminder(args: any, data: Data) {
   };
   await data.set(`reminder:${id}`, reminder);
   return { reminder };
-}
-
-async function deleteReminder(args: any, data: Data) {
-  const id = String(args.id ?? "");
-  return { deleted: await data.delete(`reminder:${id}`), id };
 }
 
 async function ackReminder(args: any, data: Data) {
@@ -342,6 +377,46 @@ async function ackReminder(args: any, data: Data) {
   return { ack, auto_recorded };
 }
 
+async function defineUserFact(args: any, data: Data) {
+  const axis = String(args.axis ?? "").trim();
+  if (!FACT_AXES.includes(axis as FactAxis)) {
+    throw new Error(`axis 는 ${FACT_AXES.join(" / ")} 중 하나.`);
+  }
+  const slug = String(args.slug ?? "").trim();
+  if (!/^[a-z][a-z0-9_]*$/.test(slug)) throw new Error("slug 는 snake_case.");
+  const label = String(args.label ?? "").trim();
+  if (!label) throw new Error("label 필수.");
+  const value = args.value;
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("value 는 object 필수 — 스칼라는 { v: ... } 로, 목록은 { items: [...] } 로 감쌀 것.");
+  }
+  const fact = { axis, slug, label, value, defined_at: nowIso() };
+  await data.set(`fact:${axis}:${slug}`, fact);
+  return { fact };
+}
+
+async function deleteEntity(args: any, data: Data) {
+  const kind = String(args.kind ?? "").trim();
+  const id = String(args.id ?? "").trim();
+  if (!id) throw new Error("id 필수.");
+  let key: string;
+  switch (kind) {
+    case "routine": key = `routine:${id}`; break;
+    case "metric": key = `metric:${id}`; break;
+    case "reminder": key = `reminder:${id}`; break;
+    case "fact": {
+      const axis = String(args.axis ?? "").trim();
+      if (!FACT_AXES.includes(axis as FactAxis)) {
+        throw new Error(`kind=fact 일 때 axis 필수 — ${FACT_AXES.join(" / ")} 중 하나.`);
+      }
+      key = `fact:${axis}:${id}`;
+      break;
+    }
+    default: throw new Error("kind 는 routine / metric / reminder / fact 중 하나.");
+  }
+  return { deleted: await data.delete(key), kind, id, axis: args.axis ?? null };
+}
+
 async function getState(data: Data) {
   const settings = await getSettings(data);
   const goal = await data.get("goal");
@@ -349,16 +424,26 @@ async function getState(data: Data) {
   const nowMin = hhmmToMin(hhmmInTz(settings.timezone));
   const sevenDaysAgo = Date.now() - 7 * 86400 * 1000;
 
-  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw] = await Promise.all([
+  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, derived] = await Promise.all([
     data.list("metric:"),
     data.list("routine:"),
     data.list("activity:"),
     data.list("meal:"),
     data.list("reminder:"),
+    data.list("fact:"),
+    computeDerived(settings, data),
   ]);
   const metricDefs = metricDefsRaw.map(r => r.value).filter(nonNull);
   const routineDefs = routineDefsRaw.map(r => r.value).filter(nonNull);
   const reminderDefs = reminderDefsRaw.map(r => r.value).filter(nonNull);
+  const facts = factsRaw.map(r => r.value).filter(nonNull);
+
+  const user_facts = {
+    exercise: facts.filter((f: any) => f.axis === "exercise"),
+    health_metric: facts.filter((f: any) => f.axis === "health_metric"),
+    diet_reminder: facts.filter((f: any) => f.axis === "diet_reminder"),
+    baseline: facts.filter((f: any) => f.axis === "baseline"),
+  };
 
   const [metrics, routines, reminders] = await Promise.all([
     Promise.all(metricDefs.map(async (def: any) => {
@@ -426,14 +511,15 @@ async function getState(data: Data) {
     },
   };
 
+  const anyRegistered = metricDefs.length > 0 || routineDefs.length > 0 || reminderDefs.length > 0 || facts.length > 0;
   let protocol_step: string;
   let recommended_next_action: string;
   if (!goal) {
     protocol_step = "awaiting_goal";
     recommended_next_action = "set_goal — 사용자 본인이 표현한 자연어 목표 한 문장을 받아 등록.";
-  } else if (metricDefs.length === 0 && routineDefs.length === 0 && reminderDefs.length === 0) {
+  } else if (!anyRegistered) {
     protocol_step = "awaiting_initial_setup";
-    recommended_next_action = "suggest_setup 으로 템플릿을 받아 사용자에게 제시 → 합의 → define_metric / define_routine_exercise / define_reminder 로 등록.";
+    recommended_next_action = "suggest_setup 으로 템플릿을 받아 사용자에게 제시 → 합의 → define_metric / define_routine_exercise / define_reminder / define_user_fact 로 등록.";
   } else {
     protocol_step = "operational";
     recommended_next_action = "사용자 요청 처리. 응답·계산은 본 state 안의 사실에만 근거.";
@@ -447,11 +533,13 @@ async function getState(data: Data) {
     settings,
     server_now: nowIso(),
     server_now_local: `${today} ${hhmmInTz(settings.timezone)}`,
+    derived,
     metrics,
     routines,
     recent_activities,
     meals_today,
     reminders,
+    user_facts,
   };
 }
 
@@ -476,7 +564,16 @@ async function computeNextWeight(slug: string, data: Data) {
   const lastAvgRir = mean(last.sets.map((s: any) => s.rir));
   const lastAvgWeight = mean(last.sets.map((s: any) => s.weight));
   const target = routine.default_rir_target ?? 2;
-  const increment = routine.category === "compound" ? 2.5 : 1.25;
+
+  let increment = routine.category === "compound" ? 2.5 : 1.25;
+  let increment_source = "default";
+  if (routine.category === "compound") {
+    const plateFact = await data.get(`fact:exercise:min_plate_increment_kg`);
+    if (plateFact?.value && typeof plateFact.value.v === "number" && plateFact.value.v > 0) {
+      increment = plateFact.value.v;
+      increment_source = "fact:exercise:min_plate_increment_kg";
+    }
+  }
 
   let delta: number;
   if (lastAvgRir > target + 1) delta = increment * 2;
@@ -506,6 +603,7 @@ async function computeNextWeight(slug: string, data: Data) {
       last_avg_rir: lastAvgRir,
       target_rir: target,
       increment,
+      increment_source,
       delta_before_cap: delta,
       weekly_cap_applied: cap_applied,
       session_count: sessions.length,
@@ -533,8 +631,8 @@ const TEMPLATES = [
       { slug: "body_weight_kg", display_name: "체중", unit: "kg", priority: "high" },
       { slug: "body_fat_pct", display_name: "체지방률", unit: "%", priority: "high" },
       { slug: "skeletal_muscle_kg", display_name: "골격근량", unit: "kg", priority: "high" },
-      { slug: "bmr", display_name: "기초대사량", unit: "kcal", priority: "normal" },
     ],
+    note: "기초대사량(BMR)·나이는 height_cm/sex/birth_year 설정 + body_weight_kg 측정으로 자동 계산. 별도 metric 등록 불필요.",
     reminders: [
       { id: "morning_weigh_in", kind: "measurement", label: "아침 체중 측정", schedule: "daily 07:00", target_metric_slug: "body_weight_kg" },
     ],
@@ -546,6 +644,9 @@ const TEMPLATES = [
       { slug: "squat", display_name: "백 스쿼트", category: "compound", unit: "kg", default_rir_target: 2, weekly_cap_kg: 5 },
       { slug: "bench_press", display_name: "벤치프레스", category: "compound", unit: "kg", default_rir_target: 2, weekly_cap_kg: 5 },
       { slug: "deadlift", display_name: "데드리프트", category: "compound", unit: "kg", default_rir_target: 2, weekly_cap_kg: 5 },
+    ],
+    facts: [
+      { axis: "exercise", slug: "min_plate_increment_kg", label: "최소 plate 증분", value_example: { v: 2.5 }, hint: "헬스장에 1.25kg 원판이 없으면 v: 5 로 등록." },
     ],
   },
   {
@@ -588,7 +689,7 @@ async function suggestSetup(data: Data) {
   return {
     goal: goal.text,
     templates,
-    note: "이는 '추천'이 아니라 '제안 후보'. AI 가 사용자에게 그대로 제시 → 합의 → define_metric / define_reminder / define_routine_exercise 로 실제 등록. 빈 배열이면 goal 에 매칭 키워드가 없는 것이므로 AI 가 사용자와 직접 협의해서 정의.",
+    note: "이는 '추천'이 아니라 '제안 후보'. AI 가 사용자에게 그대로 제시 → 합의 → define_metric / define_reminder / define_routine_exercise / define_user_fact 로 실제 등록. 빈 배열이면 goal 에 매칭 키워드가 없는 것이므로 AI 가 사용자와 직접 협의해서 정의.",
   };
 }
 
@@ -642,13 +743,30 @@ function buildDashboardHtml(tab: string, s: any): string {
     ? escapeHtml(s.goal.text)
     : `<em style="color:#888">목표 미설정 — AI에게 "목표 설정해줘"</em>`;
   const tabs: [string, string][] = [
-    ["overview", "전체"], ["exercise", "운동"], ["metrics", "지표"], ["diet", "식단·알람"],
+    ["overview", "전체"],
+    ["exercise", "운동"],
+    ["metrics", "지표"],
+    ["diet", "식단·알람"],
+    ["baseline", "베이스라인"],
   ];
 
   let content = "";
-  if (tab === "overview" || tab === "metrics") content += renderMetricsCard(s.metrics);
-  if (tab === "overview" || tab === "exercise") content += renderExerciseCard(s.routines, s.recent_activities);
-  if (tab === "overview" || tab === "diet") content += renderDietCard(s.meals_today, s.reminders);
+  if (tab === "overview") {
+    content += renderOverviewCard(s);
+  } else if (tab === "exercise") {
+    content += renderExerciseCard(s.routines, s.recent_activities);
+    content += renderFactsCard("운동 환경/장비/제약", s.user_facts.exercise);
+  } else if (tab === "metrics") {
+    content += renderDerivedCard(s.derived);
+    content += renderMetricsCard(s.metrics);
+    content += renderFactsCard("건강 관련 사실 (알레르기·복용약 등)", s.user_facts.health_metric);
+  } else if (tab === "diet") {
+    content += renderDietCard(s.meals_today, s.reminders, s.derived);
+    content += renderFactsCard("식단 제약·알람 관련", s.user_facts.diet_reminder);
+  } else if (tab === "baseline") {
+    content += renderBaselineSettingsCard(s.settings, s.derived);
+    content += renderFactsCard("기본 정보 (천천히 변하거나 고정)", s.user_facts.baseline);
+  }
 
   return `<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -658,7 +776,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0
 .hdr{border-left:3px solid #7c3aed;padding-left:12px;margin-bottom:14px}
 .step{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.5px}
 .goal{font-size:15px;margin-top:4px;color:#fafafa;line-height:1.4}
-.tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid #2a2a2a}
+.tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid #2a2a2a;flex-wrap:wrap}
 .tab{padding:7px 13px;cursor:pointer;color:#888;border:none;background:none;font-size:12px;font-family:inherit}
 .tab.active{color:#fafafa;border-bottom:2px solid #7c3aed}
 .card{background:#141414;border:1px solid #2a2a2a;border-radius:8px;padding:13px;margin-bottom:10px}
@@ -666,7 +784,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0
 .row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1f1f1f;gap:8px}
 .row:last-child{border-bottom:none}
 .name{color:#d4d4d4;min-width:0}
-.val{color:#fafafa;font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0}
+.val{color:#fafafa;font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0;word-break:break-word}
 .badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;margin-left:6px;vertical-align:middle}
 .ok{background:#15402a;color:#4ade80}
 .warn{background:#4a2f15;color:#fbbf24}
@@ -689,6 +807,71 @@ document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () =>
 }));
 </script>
 </body></html>`;
+}
+
+function renderOverviewCard(s: any): string {
+  let html = "";
+  const factCount = s.user_facts.exercise.length + s.user_facts.health_metric.length + s.user_facts.diet_reminder.length + s.user_facts.baseline.length;
+
+  html += `<div class="card"><h3>요약</h3>`;
+  html += `<div class="row"><div class="name">운동 루틴</div><div class="val">${s.routines.length}</div></div>`;
+  html += `<div class="row"><div class="name">건강 지표</div><div class="val">${s.metrics.length}</div></div>`;
+  html += `<div class="row"><div class="name">알람</div><div class="val">${s.reminders.length}</div></div>`;
+  html += `<div class="row"><div class="name">사용자 사실 (4축 합계)</div><div class="val">${factCount}</div></div>`;
+  if (s.derived?.age !== null) {
+    html += `<div class="row"><div class="name">나이 (자동)</div><div class="val">${s.derived.age}세</div></div>`;
+  }
+  if (s.derived?.bmr !== null) {
+    html += `<div class="row"><div class="name">기초대사량 (Mifflin-St Jeor)</div><div class="val">${s.derived.bmr} kcal</div></div>`;
+  }
+  html += `</div>`;
+
+  const critical = s.metrics.filter((m: any) => m.priority === "critical" && m.in_target === false);
+  if (critical.length > 0) {
+    html += `<div class="card"><h3 style="color:#f87171">⚠ critical 지표 범위 이탈 (${critical.length})</h3>`;
+    for (const m of critical) {
+      html += `<div class="row"><div class="name">${escapeHtml(m.display_name)}</div><div class="val">${m.latest_value} ${escapeHtml(m.unit)}</div></div>`;
+    }
+    html += "</div>";
+  }
+
+  const t = s.meals_today.totals;
+  html += `<div class="card"><h3>오늘 식단 · ${escapeHtml(s.meals_today.date)}</h3>`;
+  if (t.count === 0) {
+    html += '<div class="empty">아직 기록 없음.</div>';
+  } else {
+    const line = [
+      t.kcal !== null ? `${t.kcal} kcal` : null,
+      t.protein_g !== null ? `P ${t.protein_g}g` : null,
+      t.carbs_g !== null ? `C ${t.carbs_g}g` : null,
+      t.fat_g !== null ? `F ${t.fat_g}g` : null,
+    ].filter(Boolean).join(" · ");
+    html += `<div class="row"><div class="name">${t.count}끼 합계</div><div class="val">${escapeHtml(line) || '<span class="meta">영양 미입력</span>'}</div></div>`;
+    if (s.derived?.maintenance_kcal !== null && t.kcal !== null) {
+      const delta = t.kcal - s.derived.maintenance_kcal;
+      const sign = delta >= 0 ? "+" : "";
+      html += `<div class="row"><div class="name">Maintenance 대비</div><div class="val">${sign}${delta} kcal</div></div>`;
+    }
+  }
+  html += "</div>";
+
+  const todayPending: any[] = [];
+  for (const r of s.reminders) {
+    for (const sl of r.today_status) {
+      if (sl.status === "due" || sl.status === "missed") {
+        todayPending.push({ r, sl });
+      }
+    }
+  }
+  if (todayPending.length > 0) {
+    html += `<div class="card"><h3>오늘 알람 ack 대기/미수행 (${todayPending.length})</h3>`;
+    for (const p of todayPending) {
+      const cls = p.sl.status === "due" ? "due" : "warn";
+      html += `<div class="row"><div class="name">${escapeHtml(p.r.label)}</div><div class="val"><span class="badge ${cls}">${p.sl.slot}</span></div></div>`;
+    }
+    html += "</div>";
+  }
+  return html;
 }
 
 function renderMetricsCard(metrics: any[]): string {
@@ -737,7 +920,7 @@ function renderExerciseCard(routines: any[], activities: any[]): string {
   return html;
 }
 
-function renderDietCard(mealsToday: any, reminders: any[]): string {
+function renderDietCard(mealsToday: any, reminders: any[], derived: any): string {
   let html = `<div class="card"><h3>오늘 식단 · ${escapeHtml(mealsToday.date)}</h3>`;
   if (mealsToday.items.length === 0) {
     html += '<div class="empty">오늘 기록된 끼 없음.</div>';
@@ -750,6 +933,12 @@ function renderDietCard(mealsToday: any, reminders: any[]): string {
       t.fat_g !== null ? `F ${t.fat_g}g` : null,
     ].filter(Boolean).join(" · ");
     html += `<div class="row"><div class="name">합계 (${t.count}끼)</div><div class="val">${escapeHtml(totalLine) || '<span class="meta">영양 미입력</span>'}</div></div>`;
+    if (derived?.maintenance_kcal !== null && t.kcal !== null) {
+      const delta = t.kcal - derived.maintenance_kcal;
+      const sign = delta >= 0 ? "+" : "";
+      const cls = Math.abs(delta) < 200 ? "ok" : "warn";
+      html += `<div class="row"><div class="name">Maintenance 대비 <span class="badge ${cls}">${sign}${delta}</span></div><div class="val">${derived.maintenance_kcal} kcal</div></div>`;
+    }
     for (const m of mealsToday.items.slice(-3)) {
       const v = m.kcal !== null ? `${m.kcal} kcal` : '<span class="meta">—</span>';
       html += `<div class="row"><div class="name">${escapeHtml(m.name)}</div><div class="val">${v}</div></div>`;
@@ -773,4 +962,63 @@ function renderDietCard(mealsToday: any, reminders: any[]): string {
   }
   html += "</div>";
   return html;
+}
+
+function renderDerivedCard(derived: any): string {
+  if (!derived || (derived.age === null && derived.bmr === null)) return "";
+  let html = '<div class="card"><h3>자동 계산</h3>';
+  if (derived.age !== null) {
+    html += `<div class="row"><div class="name">현재 나이</div><div class="val">${derived.age}세</div></div>`;
+  }
+  if (derived.bmr !== null) {
+    html += `<div class="row"><div class="name">기초대사량 (Mifflin-St Jeor)</div><div class="val">${derived.bmr} kcal</div></div>`;
+    const src = derived.bmr_source;
+    if (src) {
+      html += `<div class="row"><div class="name"><span class="meta">기준</span></div><div class="val"><span class="meta">${src.weight_kg}kg · ${src.height_cm}cm · ${src.age}세 · ${src.sex}</span></div></div>`;
+    }
+  }
+  if (derived.maintenance_kcal !== null) {
+    html += `<div class="row"><div class="name">Maintenance (BMR × AF)</div><div class="val">${derived.maintenance_kcal} kcal</div></div>`;
+  }
+  html += "</div>";
+  return html;
+}
+
+function renderBaselineSettingsCard(settings: any, derived: any): string {
+  const unsetMeta = '<span class="meta">미설정</span>';
+  const sexLabel = settings.sex === "male" ? "남성" : settings.sex === "female" ? "여성" : unsetMeta;
+  let html = '<div class="card"><h3>고정 설정 (nesy.app UI 폼)</h3>';
+  html += `<div class="row"><div class="name">Timezone</div><div class="val">${escapeHtml(settings.timezone)}</div></div>`;
+  html += `<div class="row"><div class="name">신장</div><div class="val">${settings.height_cm > 0 ? `${settings.height_cm} cm` : unsetMeta}</div></div>`;
+  html += `<div class="row"><div class="name">성별</div><div class="val">${sexLabel}</div></div>`;
+  html += `<div class="row"><div class="name">출생년도</div><div class="val">${settings.birth_year > 0 ? `${settings.birth_year}년` : unsetMeta}</div></div>`;
+  html += `<div class="row"><div class="name">Activity factor</div><div class="val">${settings.activity_factor > 0 ? settings.activity_factor : unsetMeta}</div></div>`;
+  if (derived?.age !== null) {
+    html += `<div class="row"><div class="name">현재 나이 (자동)</div><div class="val">${derived.age}세</div></div>`;
+  }
+  html += "</div>";
+  return html;
+}
+
+function renderFactsCard(title: string, facts: any[]): string {
+  let html = `<div class="card"><h3>${escapeHtml(title)} (${facts.length})</h3>`;
+  if (facts.length === 0) {
+    html += '<div class="empty">등록된 사실 없음.</div></div>';
+    return html;
+  }
+  for (const f of facts) {
+    const valueStr = factValueSummary(f.value);
+    html += `<div class="row"><div class="name">${escapeHtml(f.label)} <span class="meta">${escapeHtml(f.slug)}</span></div><div class="val">${escapeHtml(valueStr)}</div></div>`;
+  }
+  html += "</div>";
+  return html;
+}
+
+function factValueSummary(v: any): string {
+  if (v === null || v === undefined) return "—";
+  if (typeof v !== "object") return String(v);
+  const keys = Object.keys(v);
+  if (keys.length === 1 && "v" in v) return String(v.v);
+  if (keys.length === 1 && Array.isArray(v.items)) return v.items.map((it: any) => typeof it === "object" ? JSON.stringify(it) : String(it)).join(", ");
+  try { return JSON.stringify(v); } catch { return "[object]"; }
 }
