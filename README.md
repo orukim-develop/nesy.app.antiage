@@ -1,4 +1,4 @@
-# nesy.app.health — 건강 마도서
+# nesy.app.getmuscle — 심장이 득근득근해지는 마법 (건강 마도서)
 
 > 호출 AI(Claude / ChatGPT / Gemini)의 **외장 기억장치**. 마도서는 추천 안 하고 **기록 / 조회 / 검증된 공식으로 계산**만 한다.
 
@@ -112,7 +112,7 @@
 
 ## 호출 마법언어
 
-`헬스` / `health`
+`득근득근` / `getmuscle`
 
 ## 비밀 (secrets)
 
@@ -120,9 +120,9 @@
 
 ## 배포
 
-1. 이 폴더를 GitHub repo (`orukim-develop/nesy.app.health`) 에 push (`push.bat`)
+1. 이 폴더를 GitHub repo (`orukim-develop/nesy.app.getmuscle`) 에 push (`push.bat`)
 2. nesy.app `/account/tools/new` → repo URL → "지금 가져오기"
-3. 매니페스트 검증 → 등록 → 호출어 `헬스` 확인
+3. 매니페스트 검증 → 등록 → 호출어 `득근득근` 확인
 4. 첫 실행: 호출 AI 에게 "내 건강 목표는 ..." → `get_state` → `set_goal` → `propose_setup_from_goal` → 합의된 `set_*`
 
 ## 의도적으로 만들지 않는 것

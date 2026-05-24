@@ -1,4 +1,4 @@
-// nesy.app.health — 건강 마도서.
+// nesy.app.getmuscle — 심장이 득근득근해지는 마법 (건강 마도서).
 //
 // 호출 AI (Claude / ChatGPT / Gemini) 의 외장 기억.
 // 사용자의 자연어 목표를 받아 AI 가 유동적으로 metric / exercise / reminder 를 등록·운영.
