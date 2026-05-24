@@ -2,7 +2,7 @@
 #
 # 호출 AI (Claude / ChatGPT / Gemini) 의 외장 기억장치.
 # 추천하지 않고, 기록 / 돌려줌 / 검증된 공식으로 계산만 한다.
-# 자세한 설계 근거는 SPEC.md.
+# 설계 개요는 README.md, 함수별 근거는 각 핸들러 주석.
 
 tools:
   # ─────────────────────────────────────────────────────────────────────
@@ -275,6 +275,68 @@ tools:
           type: string
 
   # ─────────────────────────────────────────────────────────────────────
+  # 첫 사용 프로필 일괄 저장 ⭐
+  # ─────────────────────────────────────────────────────────────────────
+  - name: init_user_profile
+    description: |
+      마도서 첫 사용 시 사용자 영구 프로필 (목표 체중·PR·4대 목표·활동계수·헬스장 봉 무게 등) 을 한 번에 저장.
+      호출 AI 는 (a) get_state 의 missing_settings 가 비어 있지 않거나
+      (b) 사용자가 처음 마도서를 호출했다고 판단되면 사용자에게 친근하게 물어보고 이 함수로 일괄 저장.
+      모든 인자 optional — 사용자가 모르거나 안 말하면 비워도 됨. 반환값 still_missing 으로 남은 항목 확인.
+      한 번에 다 받지 못해도 OK — 다음 대화에서 다시 호출하면 인자만 머지 update (idempotent).
+      시간별 측정값 (체중·InBody·혈액검사·운동 세션) 은 record_* 함수로 별도 입력.
+    inputSchema:
+      type: object
+      properties:
+        target_weight_min:
+          type: number
+          description: 목표 체중 하한 kg.
+        target_weight_max:
+          type: number
+          description: 목표 체중 상한 kg.
+        target_weight_rule:
+          type: string
+          description: "'always_in_range' | 'fasted_only' | 'daily_average'. 기본 always_in_range."
+        bar_weight_kg_smith:
+          type: number
+          description: 스미스머신 봉 무게 kg. 헬스장 측정값. 기본 20.
+        bar_weight_kg_barbell:
+          type: number
+          description: 프리웨이트 바벨 봉 무게 kg. 기본 20 (표준 올림픽 바).
+        bar_weight_verified:
+          type: boolean
+          description: 봉 무게 실측 검증했는지. 행잉저울 등으로 측정 후 true.
+        activity_factor:
+          type: number
+          description: BMR 곱셈 활동계수. 1.2(좌식)/1.375(가벼움)/1.55(중간)/1.725(높음)/1.9(매우높음).
+        pr_squat_kg:
+          type: number
+          description: 스쿼트 1RM kg.
+        pr_bench_press_kg:
+          type: number
+          description: 벤치프레스 1RM kg.
+        pr_shoulder_press_kg:
+          type: number
+          description: 숄더프레스 1RM kg.
+        pr_deadlift_kg:
+          type: number
+          description: 데드리프트 1RM kg.
+        four_goals:
+          type: array
+          description: |
+            추구하는 운동·체력 목표 슬러그 배열 (snake_case 영문). 최대 8개.
+            예 ['futsal_soccer', 'taekwondo', 'thigh_power', 'upper_body_maintenance'].
+        next_blood_panel_target:
+          type: string
+          description: 다음 혈액검사 예정 시기 자유 문자열. 예 '2026-06 ~ 2026-07'.
+        timezone:
+          type: string
+          description: IANA timezone. 기본 'Asia/Seoul'. 해외 거주/출장 시 변경.
+        supplement_window_minutes:
+          type: integer
+          description: 영양제 알림 윈도우 분. 기본 30.
+
+  # ─────────────────────────────────────────────────────────────────────
   # 현재 상태 종합 스냅샷 ⭐
   # ─────────────────────────────────────────────────────────────────────
   - name: get_state
@@ -322,15 +384,20 @@ tools:
 # 사용자 설정 (호출 AI 에게 노출되는 상수 — 멋대로 해석 차단용)
 # ─────────────────────────────────────────────────────────────────────────
 user_settings:
+  # ─────────────────────────────────────────────────────────────────────
+  # 사용자별 다른 키 (PR/목표/4대목표/다음 채혈일) 는 0 / 빈 배열 / 빈 문자열 디폴트.
+  # 호출 AI 는 get_state.missing_settings 보고 사용자에게 묻거나 init_user_profile 일괄 호출.
+  # 헬스장 표준값·일반 활동계수·timezone 만 통계적 디폴트.
+  # ─────────────────────────────────────────────────────────────────────
   - key: target_weight_min
     type: number
-    default: 73
-    description: 목표 체중 하한 kg.
+    default: 0
+    description: 목표 체중 하한 kg. 0 이면 미설정 — 호출 AI 가 사용자에게 묻고 update.
 
   - key: target_weight_max
     type: number
-    default: 75
-    description: 목표 체중 상한 kg.
+    default: 0
+    description: 목표 체중 상한 kg. 0 이면 미설정.
 
   - key: target_weight_rule
     type: enum
@@ -343,52 +410,55 @@ user_settings:
   - key: bar_weight_kg_smith
     type: number
     default: 20
-    description: 스미스머신 봉 무게. 잠정값 — 다이소 행잉저울로 측정 필요.
+    description: 스미스머신 봉 무게 kg. 통계 디폴트 — 헬스장 실측이 다르면 행잉저울로 측정 후 갱신.
 
   - key: bar_weight_verified
     type: boolean
     default: false
-    description: 봉 무게 검증 여부. 검증 전엔 compute_next_load 의 warnings 에 표시.
+    description: 봉 무게 실측 검증 여부. false 면 compute_next_load 의 warnings 에 표시 — 사용자가 측정해 true 로 바꿀 때까지.
 
   - key: bar_weight_kg_barbell
     type: number
     default: 20
-    description: 프리웨이트 바벨 봉 무게.
+    description: 프리웨이트 바벨 봉 무게 kg. 표준 올림픽 바 기준.
 
   - key: activity_factor
     type: number
-    default: 1.25
-    description: BMR 곱셈 활동계수. 1.2(좌식) ~ 1.55(중간활동). 마운자로 후 대사적응 감안 1.2-1.3 권장.
+    default: 1.4
+    description: BMR 곱셈 활동계수. 1.2(좌식)/1.375(가벼움)/1.55(중간)/1.725(높음)/1.9(매우높음). 사용자 활동량에 맞춰 update.
 
   - key: pr_squat_kg
     type: number
-    default: 90
-    description: 부상 전 스쿼트 PR (프리웨이트 기준).
+    default: 0
+    description: 스쿼트 1RM kg (프리웨이트 기준). 0 이면 미측정 — 호출 AI 가 사용자에게 묻거나 측정 후 갱신.
 
   - key: pr_bench_press_kg
     type: number
-    default: 60
-    description: 부상 전 벤치프레스 PR (봉+20+20 환산).
+    default: 0
+    description: 벤치프레스 1RM kg. 0 이면 미측정.
 
   - key: pr_shoulder_press_kg
     type: number
-    default: 30
-    description: 부상 전 숄더프레스 PR.
+    default: 0
+    description: 숄더프레스 1RM kg. 0 이면 미측정.
 
   - key: pr_deadlift_kg
     type: number
     default: 0
-    description: 부상 전 데드리프트 PR. 측정 안 됐으면 0.
+    description: 데드리프트 1RM kg. 0 이면 미측정.
 
   - key: four_goals
     type: list_string
-    default: [futsal_soccer, taekwondo, thigh_power, upper_body_maintenance]
-    description: 4대 운동 목표. 변경 시 마도서 추천 검증 기준이 바뀜.
+    default: []
+    description: |
+      사용자가 추구하는 운동·체력 목표 슬러그 배열 (snake_case). 예 ['futsal_soccer', 'thigh_power'].
+      빈 배열이면 호출 AI 가 "어떤 몸을 만들고 싶어?" 묻고 채움.
+      compute_next_load 및 호출 AI 추천이 이 목표와 정합한지 검증.
 
   - key: next_blood_panel_target
     type: string
-    default: "2026-06 ~ 2026-07"
-    description: 다음 혈액검사 예정 시기. 사용자가 채혈하고 record_blood_panel 호출 후 다음 일정으로 갱신.
+    default: ""
+    description: 다음 혈액검사 예정 시기 자유 문자열 (예 '2026-06 ~ 2026-07'). 비면 미정 — 호출 AI 가 묻고 채움.
 
   - key: timezone
     type: string

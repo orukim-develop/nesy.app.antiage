@@ -13,6 +13,7 @@ import {
 } from './store.ts';
 import { daysBetween, todayIso } from './utils.ts';
 import { timeToKey, timeToMinutes, nowInTz, daysSinceIso } from './supplements/common.ts';
+import { REQUIRED_PROFILE_KEYS, isMissingValue } from './init_user_profile.ts';
 
 const TRACKED_EXERCISES = ['squat', 'deadlift', 'bench_press', 'shoulder_press'];
 
@@ -38,7 +39,10 @@ export async function getState(ctx: RunCtx) {
   const lastWeight = weightSorted[0] || null;
   const last7 = recentDays(weights, today, 7);
   const last7Avg = avg(last7.map((w) => w.weight_kg));
-  const inRange = lastWeight
+  // target 미설정 (0/0) 이면 in_range 자체가 의미 없음 → null.
+  const targetConfigured =
+    settings.target_weight_min > 0 && settings.target_weight_max > 0;
+  const inRange = lastWeight && targetConfigured
     ? lastWeight.weight_kg >= settings.target_weight_min &&
       lastWeight.weight_kg <= settings.target_weight_max
     : null;
@@ -152,6 +156,13 @@ export async function getState(ctx: RunCtx) {
   // ───── 영양제 섹션 ─────
   const supplementSection = buildSupplementSection(supps, allIntakes, settings.timezone, today);
 
+  // ───── 누락 user_settings 진단 ─────
+  // 0/빈 으로 남아있는 필수 키. 호출 AI 가 사용자에게 묻거나 init_user_profile 호출 권고.
+  const missingSettings: string[] = [];
+  for (const k of REQUIRED_PROFILE_KEYS) {
+    if (isMissingValue(k, (settings as any)[k])) missingSettings.push(k);
+  }
+
   return {
     today,
     user_constants: {
@@ -167,6 +178,7 @@ export async function getState(ctx: RunCtx) {
         deadlift: settings.pr_deadlift_kg,
       },
     },
+    missing_settings: missingSettings,
     weight: {
       last_measurement: lastWeight
         ? {
@@ -198,6 +210,8 @@ export async function getState(ctx: RunCtx) {
       ai_must_get_user_confirmation_before_record_meal: true,
       ai_must_not_invent_loads_outside_compute_next_load: true,
       ai_must_not_diagnose_from_blood_flags: true,
+      ai_must_call_init_user_profile_if_missing_settings_nonempty:
+        missingSettings.length > 0,
     },
   };
 }

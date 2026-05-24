@@ -16,6 +16,7 @@ import { listSupplements } from './src/supplements/list.ts';
 import { deleteSupplement } from './src/supplements/delete.ts';
 import { recordSupplementIntake } from './src/supplements/intake.ts';
 import { checkNotifications } from './src/supplements/notify.ts';
+import { initUserProfile } from './src/init_user_profile.ts';
 
 export async function run({ input, secrets, data }: RunCtx): Promise<unknown> {
   const ctx: RunCtx = { input, secrets, data };
@@ -34,6 +35,8 @@ export async function run({ input, secrets, data }: RunCtx): Promise<unknown> {
     case 'list_supplements':          return await listSupplements(ctx);
     case 'delete_supplement':         return await deleteSupplement(ctx);
     case 'record_supplement_intake':  return await recordSupplementIntake(ctx);
+    // ── 첫 사용 프로필 ───────────────────
+    case 'init_user_profile':         return await initUserProfile(ctx);
     // ── 조회 / 계산 ───────────────────────
     case 'get_state':                 return await getState(ctx);
     case 'compute_next_load':         return await computeNextLoad(ctx);

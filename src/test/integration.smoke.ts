@@ -59,12 +59,21 @@ const s4 = await call('record_session', {
 console.log('   →', s4);
 assert((s4 as any).warnings.some((w: string) => w.includes('활성 부상')), '활성 부상 충돌');
 
-console.log('5) record_weight');
+console.log('5) record_weight — 목표 미설정 → in_range null');
 const w1 = await call('record_weight', {
   date: '2026-05-23', weight_kg: 75.2, measurement_context: 'fasted',
 });
 console.log('   →', w1);
 assert((w1 as any).saved, 'saved');
+assert((w1 as any).in_range === null, '목표 미설정 → in_range null');
+assert((w1 as any).target_range.configured === false, 'target_range.configured false');
+
+console.log('5b) init_user_profile — target 설정 후 record_weight 다시');
+await call('init_user_profile', { target_weight_min: 73, target_weight_max: 75 });
+const w1b = await call('record_weight', {
+  date: '2026-05-23', time: '09:00', weight_kg: 74.0, measurement_context: 'fasted',
+});
+assert((w1b as any).in_range === true, '74.0 in [73,75]');
 
 console.log('6) record_inbody (직전 없음)');
 const ib1 = await call('record_inbody', {
@@ -130,9 +139,13 @@ console.log('   today=', state.today,
 );
 assert(state.today.match(/^\d{4}-\d{2}-\d{2}$/), 'today iso');
 assert(state.injury.active === true, 'injury active');
-assert(state.weight.in_target_range === false, '75.2 > 75 → 범위 밖');
+// last_measurement 는 가장 최근 시간 (09:00 의 74.0) 이므로 in_range = true
+assert(state.weight.in_target_range === true, '74.0 in [73,75] → 범위 안');
 assert(state.last_blood.flags.includes('ldl_high'), 'blood flag');
 assert(state.meta.ai_must_call_get_state_before_recommendation === true, 'meta flag');
+// 4대 목표·PR·next_blood_panel_target 아직 미설정 → missing_settings 남아있음
+assert(state.missing_settings.length > 0, 'missing_settings 일부 남음 (PR·four_goals 등)');
+assert(state.meta.ai_must_call_init_user_profile_if_missing_settings_nonempty === true, 'init_user_profile 권고 meta');
 
 console.log('12) compute_next_load — 부상 활성 + squat → return_from_injury');
 const cnl = await call('compute_next_load', { exercise_name: 'squat' }) as any;

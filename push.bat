@@ -15,7 +15,7 @@ echo [2/5] git config
 git config user.name "Oru Kim"
 git config user.email "orukim@gmail.com"
 echo [3/5] git add
-git add nesy.yaml index.ts package.json tsconfig.json README.md SPEC.md .gitignore push.bat src
+git add nesy.yaml index.ts package.json tsconfig.json README.md .gitignore push.bat src
 echo [4/5] git commit
 git commit -m "feat: 심장이 득근득근해지는 마법 - 초기 스캐폴드"
 echo [5/5] git push

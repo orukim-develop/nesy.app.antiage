@@ -29,8 +29,12 @@ export async function recordWeight(ctx: RunCtx) {
   // ───── 7일 평균 + in_range 판정 ─────
   const all = await loadAllWeights(ctx);
   const last7 = recentDaysAvg(all, a.date, 7);
-  const inRange =
-    a.weight_kg >= settings.target_weight_min && a.weight_kg <= settings.target_weight_max;
+  // 목표 체중 미설정 (0/0) 이면 in_range 판정 불가 → null. 호출 AI 가 init_user_profile 권고.
+  const targetConfigured =
+    settings.target_weight_min > 0 && settings.target_weight_max > 0;
+  const inRange = targetConfigured
+    ? a.weight_kg >= settings.target_weight_min && a.weight_kg <= settings.target_weight_max
+    : null;
 
   return {
     saved: true,
@@ -38,6 +42,7 @@ export async function recordWeight(ctx: RunCtx) {
       min: settings.target_weight_min,
       max: settings.target_weight_max,
       rule: settings.target_weight_rule,
+      configured: targetConfigured,
     },
     in_range: inRange,
     delta_vs_7day_avg:

@@ -99,10 +99,14 @@ function sectionHeader(today: string, settings: import('./types.ts').Settings, a
     const since = daysBetween(activeInjury.started, today);
     injuryHtml = `<span class="injury-active">⚠ 부상: ${escapeHtml(activeInjury.site)} (${since}일째)</span>`;
   }
+  const targetConfigured = settings.target_weight_min > 0 && settings.target_weight_max > 0;
+  const targetHtml = targetConfigured
+    ? `목표 ${settings.target_weight_min}–${settings.target_weight_max}kg · ${escapeHtml(settings.target_weight_rule)}`
+    : `목표 미설정 (init_user_profile 호출)`;
   return `<div class="card wide">
     <div class="row tight">
       <div><span class="num">${escapeHtml(today)}</span></div>
-      <div class="sub">목표 ${settings.target_weight_min}–${settings.target_weight_max}kg · ${escapeHtml(settings.target_weight_rule)}</div>
+      <div class="sub">${targetHtml}</div>
     </div>
     <div class="row tight">${injuryHtml}</div>
   </div>`;
@@ -133,9 +137,16 @@ function sectionWeightChart(
     return `<div class="card wide"><h3>체중 추이 (30일)</h3><div class="empty">데이터 없음 — record_weight 호출 필요.</div></div>`;
   }
 
-  // Y 축 범위: target range 포함 ± 1kg 여유.
-  const minKg = Math.min(settings.target_weight_min - 1, ...pts.map((p) => p.kg));
-  const maxKg = Math.max(settings.target_weight_max + 1, ...pts.map((p) => p.kg));
+  // target 미설정 (0/0) 이면 가이드라인/legend 표시 안 함.
+  const targetConfigured = settings.target_weight_min > 0 && settings.target_weight_max > 0;
+
+  // Y 축 범위: target range 포함 ± 1kg 여유. target 미설정이면 데이터만 기준.
+  const minKg = targetConfigured
+    ? Math.min(settings.target_weight_min - 1, ...pts.map((p) => p.kg))
+    : Math.min(...pts.map((p) => p.kg)) - 1;
+  const maxKg = targetConfigured
+    ? Math.max(settings.target_weight_max + 1, ...pts.map((p) => p.kg))
+    : Math.max(...pts.map((p) => p.kg)) + 1;
   const range = Math.max(1, maxKg - minKg);
 
   const x = (day: number) => PAD_L + (day / 30) * chartW;
@@ -153,9 +164,13 @@ function sectionWeightChart(
     injuryBands += `<rect class="injury-band" x="${x(startDay)}" y="${PAD_T}" width="${Math.max(2, x(endDay) - x(startDay))}" height="${chartH}"></rect>`;
   }
 
-  // 가이드라인 (target min/max).
-  const guideMin = `<line class="guideline" x1="${PAD_L}" y1="${y(settings.target_weight_min)}" x2="${W - PAD_R}" y2="${y(settings.target_weight_min)}"></line>`;
-  const guideMax = `<line class="guideline" x1="${PAD_L}" y1="${y(settings.target_weight_max)}" x2="${W - PAD_R}" y2="${y(settings.target_weight_max)}"></line>`;
+  // 가이드라인 (target min/max). target 미설정이면 표시 안 함.
+  const guideMin = targetConfigured
+    ? `<line class="guideline" x1="${PAD_L}" y1="${y(settings.target_weight_min)}" x2="${W - PAD_R}" y2="${y(settings.target_weight_min)}"></line>`
+    : '';
+  const guideMax = targetConfigured
+    ? `<line class="guideline" x1="${PAD_L}" y1="${y(settings.target_weight_max)}" x2="${W - PAD_R}" y2="${y(settings.target_weight_max)}"></line>`
+    : '';
 
   // 데이터 라인.
   const polyPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.day).toFixed(1)},${y(p.kg).toFixed(1)}`).join(' ');
@@ -165,8 +180,11 @@ function sectionWeightChart(
   // 데이터 점 (context별 색).
   const dots = pts.map((p) => `<circle class="pt-${p.ctx}" cx="${x(p.day).toFixed(1)}" cy="${y(p.kg).toFixed(1)}" r="2.5"></circle>`).join('');
 
-  // Y 축 레이블.
-  const yLabels = [minKg, settings.target_weight_min, settings.target_weight_max, maxKg]
+  // Y 축 레이블. target 미설정이면 데이터 범위만.
+  const yLabelVals = targetConfigured
+    ? [minKg, settings.target_weight_min, settings.target_weight_max, maxKg]
+    : [minKg, (minKg + maxKg) / 2, maxKg];
+  const yLabels = yLabelVals
     .filter((v, i, arr) => arr.indexOf(v) === i)
     .map((v) => `<text class="axis-text" x="${PAD_L - 4}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${v.toFixed(1)}</text>`)
     .join('');
@@ -190,7 +208,7 @@ function sectionWeightChart(
       <span><span class="dot" style="background:#4f7df0"></span>공복</span>
       <span><span class="dot" style="background:#f0904f"></span>식후</span>
       <span><span class="dot" style="background:#4fa07d"></span>운동후</span>
-      <span><span class="dot" style="background:#c3a155"></span>목표 ${settings.target_weight_min}–${settings.target_weight_max}</span>
+      ${targetConfigured ? `<span><span class="dot" style="background:#c3a155"></span>목표 ${settings.target_weight_min}–${settings.target_weight_max}</span>` : ''}
     </div>
   </div>`;
 }
@@ -321,8 +339,9 @@ function sectionExercises(
 function sectionBlood(bloodAll: import('./types.ts').BloodPanel[], settings: import('./types.ts').Settings, today: string): string {
   const sorted = [...bloodAll].sort((a, b) => b.date.localeCompare(a.date));
   const last = sorted[0];
+  const dueText = settings.next_blood_panel_target?.trim() || '미정';
   if (!last) {
-    return `<div class="card"><h3>혈액검사</h3><div class="empty">기록 없음.</div><div class="sub">다음 예정: ${escapeHtml(settings.next_blood_panel_target)}</div></div>`;
+    return `<div class="card"><h3>혈액검사</h3><div class="empty">기록 없음.</div><div class="sub">다음 예정: ${escapeHtml(dueText)}</div></div>`;
   }
   const rows: string[] = [];
   function row(label: string, value: number | undefined, unit: string, flagFn?: (v: number) => 'ok' | 'warn' | 'alert') {
@@ -337,11 +356,10 @@ function sectionBlood(bloodAll: import('./types.ts').BloodPanel[], settings: imp
   row('공복혈당', last.fasting_glucose_mg_dl, 'mg/dL', (v) => v >= 126 ? 'alert' : v >= 100 ? 'warn' : 'ok');
   row('HbA1c', last.hba1c_pct, '%', (v) => v >= 6.5 ? 'alert' : v >= 5.7 ? 'warn' : 'ok');
 
-  const due = settings.next_blood_panel_target;
   return `<div class="card"><h3>혈액검사</h3>
     <div class="sub">${escapeHtml(last.date)}</div>
     ${rows.join('')}
-    <div class="sub" style="margin-top:6px">다음 예정: ${escapeHtml(due)}</div>
+    <div class="sub" style="margin-top:6px">다음 예정: ${escapeHtml(dueText)}</div>
   </div>`;
 }
 
