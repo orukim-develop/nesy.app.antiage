@@ -21,7 +21,6 @@
 | 함수 | 역할 |
 | --- | --- |
 | `set_exercise` | 루틴 운동 정의 (slug, display_name, category=compound/isolation). compute_next_load 대상. |
-| `list_exercises` | 등록 운동 목록 + 마지막 세션 |
 | `delete_exercise` | 정의 삭제 (세션 기록 보존) |
 | `record_session` | 루틴 운동 세션 한 건. 15% 급증량이면 warning, PR 자동 update |
 | `record_activity` | 비루틴 활동 (축구·산책·자전거 등). name 자유 텍스트 |
@@ -30,7 +29,6 @@
 | 함수 | 역할 |
 | --- | --- |
 | `set_metric` | 지표 정의 (slug, unit, target_min/max, priority). 당뇨인은 glucose, 근비대 추구자는 body_fat_pct 등 |
-| `list_metrics` | 등록 지표 + 최근값 + target 평가 |
 | `delete_metric` | 정의 삭제 (측정 기록 보존) |
 | `record_metric` | 측정 한 건. in_target_range, delta_from_previous, delta_from_7d_avg 반환 |
 
@@ -43,9 +41,10 @@
 | 함수 | 역할 |
 | --- | --- |
 | `set_reminder` | 알람 정의. type=supplement/measurement/action. 비타민D 매일 9시·인슐린 1일 3회·아침 혈당 측정 등 모두 한 통로 |
-| `list_reminders` | 활성 알람 + 오늘 ack 카운트 |
 | `delete_reminder` | 정의 삭제 |
 | `record_reminder_ack` | "방금 했어" 기록. 윈도우 안이면 해당 슬롯 알림 끝 |
+
+> **참고**: `list_*` (운동·지표·알람 목록 조회) 함수는 매니페스트 한도(16개) 때문에 노출 안 함 — `get_state` 가 셋 다 통합해서 반환.
 
 ### 조회 / 계산
 | 함수 | 역할 |

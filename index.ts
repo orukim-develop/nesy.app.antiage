@@ -10,14 +10,15 @@ import type { RunCtx } from './src/types.ts';
 import { setGoalTool } from './src/goal.ts';
 
 // Exercise — 루틴 운동 정의 + 세션 기록
-import { setExerciseTool, listExercisesTool, deleteExerciseTool } from './src/exercise.ts';
+// (list_* 는 매니페스트에 미노출 — get_state 가 대신 반환. 함수는 dashboard / get_state 가 내부 호출.)
+import { setExerciseTool, deleteExerciseTool } from './src/exercise.ts';
 import { recordSessionTool } from './src/session.ts';
 
 // 비루틴 활동 (축구·산책·자전거 등)
 import { recordActivityTool } from './src/activity.ts';
 
 // 건강지표 — 정의 + 측정
-import { setMetricTool, listMetricsTool, deleteMetricTool } from './src/metric.ts';
+import { setMetricTool, deleteMetricTool } from './src/metric.ts';
 import { recordMetricTool } from './src/metric_record.ts';
 
 // 식단
@@ -25,7 +26,7 @@ import { recordMealTool } from './src/meal.ts';
 
 // 알람 (영양제·약·측정·행동 통합)
 import {
-  setReminderTool, listRemindersTool, deleteReminderTool, recordReminderAckTool,
+  setReminderTool, deleteReminderTool, recordReminderAckTool,
 } from './src/reminder.ts';
 
 // 조회·계산
@@ -47,7 +48,6 @@ export async function run({ input, secrets, data }: RunCtx): Promise<unknown> {
 
     // ── Exercise (루틴) ──────────────────────────
     case 'set_exercise':              return await setExerciseTool(ctx);
-    case 'list_exercises':            return await listExercisesTool(ctx);
     case 'delete_exercise':           return await deleteExerciseTool(ctx);
     case 'record_session':            return await recordSessionTool(ctx);
 
@@ -56,7 +56,6 @@ export async function run({ input, secrets, data }: RunCtx): Promise<unknown> {
 
     // ── 건강지표 ──────────────────────────────────
     case 'set_metric':                return await setMetricTool(ctx);
-    case 'list_metrics':              return await listMetricsTool(ctx);
     case 'delete_metric':             return await deleteMetricTool(ctx);
     case 'record_metric':             return await recordMetricTool(ctx);
 
@@ -65,7 +64,6 @@ export async function run({ input, secrets, data }: RunCtx): Promise<unknown> {
 
     // ── 알람 ──────────────────────────────────────
     case 'set_reminder':              return await setReminderTool(ctx);
-    case 'list_reminders':            return await listRemindersTool(ctx);
     case 'delete_reminder':           return await deleteReminderTool(ctx);
     case 'record_reminder_ack':       return await recordReminderAckTool(ctx);
 

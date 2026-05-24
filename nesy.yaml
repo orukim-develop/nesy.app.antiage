@@ -65,14 +65,6 @@ tools:
           type: number
           description: "1RM 또는 측정된 최대 무게 kg. 모르면 생략."
 
-  - name: list_exercises
-    description: |
-      등록된 루틴 운동 전체 목록 + 각각의 마지막 세션 top set + 7일 내 빈도.
-      "지금 뭐 하고 있어?" / "스쿼트 마지막에 몇 kg 했어?" 류 질문 전에 호출.
-    inputSchema:
-      type: object
-      properties: {}
-
   - name: delete_exercise
     description: |
       루틴 운동 정의 영구 삭제. 과거 세션 기록은 보존.
@@ -168,14 +160,6 @@ tools:
         frequency_hint:
           type: string
           description: "측정 빈도 자유 텍스트 힌트. 예: 'daily_morning_fasted', 'weekly', 'quarterly'."
-
-  - name: list_metrics
-    description: |
-      등록된 건강지표 전체 + 각각의 최근값 + target 평가 + 측정 카운트.
-      "내 혈당 어때?" / "최근 측정 뭐 있어?" 류 질문 전에 호출.
-    inputSchema:
-      type: object
-      properties: {}
 
   - name: delete_metric
     description: |
@@ -276,14 +260,6 @@ tools:
         end_date:
           type: string
           description: "YYYY-MM-DD. 이 날짜 후엔 알림 안 옴. 한시 복용약에 유용."
-
-  - name: list_reminders
-    description: |
-      활성 알람 전체 + 오늘 각 슬롯 ack 카운트. end_date 지난 건 제외.
-      "오늘 뭐 남았어?" / "지금 챙겨야 할 거 있어?" 류 질문 전 호출.
-    inputSchema:
-      type: object
-      properties: {}
 
   - name: delete_reminder
     description: |
