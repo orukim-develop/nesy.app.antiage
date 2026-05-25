@@ -27,7 +27,8 @@ const AI_RULES = [
   "축이 모호하면 두 선택지를 사용자 발화 언어로 풀어서 직접 질문 — AI 단독 결정 금지.",
   "BMR 은 별도 metric 등록 불필요 — height_cm/sex/birth_year + body_weight_kg 측정으로 자동 계산되어 derived 에 들어옴.",
   "운동 등록 시 진척 축 사용자 발화 언어로 자연스럽게 합의 — 무게↑ / 시간↓ / 거리↑ / 횟수↑ / 유지시간↑ 중 어느 축인지 (한국어 예 '무게 늘리기 / 시간 줄이기 / 거리 늘리기 / 횟수 늘리기 / 유지 시간 늘리기', 영어 예 'add weight / cut time / extend distance / more reps / longer hold'). 'progression=weight' 같이 코드값 노출 금지. 표준 인체 가정 금지 — 다리/팔 없는 사용자도 본인이 가능한 형태(기어가기 등) 등록 가능.",
-  "진척 추적 대상 vs 자유 활동 분류 모호하면 사용자 발화 언어로 직접 질문 (한국어 예 '이거 진척 추적할까요, 아니면 그냥 활동 기록만 할까요?', 영어 예 'Track this as progression, or just log it as an activity?').",
+  "운동 등록 시 계획된 세트수·횟수(또는 범위) 사용자 발화 언어로 함께 합의 — 무게/횟수 진척이면 횟수도 같이(한국어 예 '3세트 5회' 또는 '3세트 8~12회 범위', 영어 예 '3 sets of 5 reps' 또는 '3 sets of 8-12 reps'), 시간/거리/유지시간 진척이면 세트수만 자연스럽게 (보통 1세트). 'target_sets=3' 같이 코드값 노출 금지. 사용자가 묻지 않으면 기본값 사용 OK.",
+  "진척 추적 대상 vs 자유 활동 분류 모호하면 사용자 발화 언어로 직접 질문 (한국어 예 '이거 진척 추적할까요, 아니면 그냥 활동 기록만 할까요?', 영어 예 'Track this as progression, or just log it as an activity?'). 축구·테니스·등산 같은 스포츠는 보통 log_activity 가 자연스럽지만, 사용자가 '시간 늘리기' / '거리 늘리기' 같은 축으로 진척 추적 원하면 적절한 progression 으로 루틴 등록도 가능 — 사용자 의도 확인 후.",
   "RPE 는 1~10 (높을수록 힘듦) — 사용자에게는 RPE 용어 노출 금지, 사용자 언어로 풀어 묻기 (한국어 '힘들었음 점수', 영어 'how hard it felt (1-10)').",
   "분할 등록 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 분할 등록 안 함.",
 ];
@@ -171,6 +172,20 @@ async function setGoal(args: any, data: Data) {
   return { goal };
 }
 
+function defaultTargetSets(progression: string): number {
+  if (progression === "time" || progression === "distance") return 1;
+  return 3; // weight, reps, hold
+}
+
+function parsePositiveInt(v: any, field: string): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) {
+    throw new Error(`${field} 는 1 이상의 정수.`);
+  }
+  return n;
+}
+
 async function defineRoutine(args: any, data: Data) {
   const slug = String(args.slug ?? "").trim();
   if (!/^[a-z][a-z0-9_]*$/.test(slug)) throw new Error("slug 는 snake_case (소문자/숫자/_).");
@@ -193,11 +208,32 @@ async function defineRoutine(args: any, data: Data) {
     category = String(args.category);
   }
 
+  const target_sets_raw = parsePositiveInt(args.target_sets, "target_sets");
+  const target_sets = target_sets_raw ?? defaultTargetSets(progression);
+  const target_reps = parsePositiveInt(args.target_reps, "target_reps");
+  let target_reps_min = parsePositiveInt(args.target_reps_min, "target_reps_min");
+  let target_reps_max = parsePositiveInt(args.target_reps_max, "target_reps_max");
+  // 고정값 우선 — target_reps 가 있으면 range 무시
+  if (target_reps !== null) {
+    target_reps_min = null;
+    target_reps_max = null;
+  } else if (target_reps_min !== null && target_reps_max !== null) {
+    if (target_reps_min > target_reps_max) {
+      throw new Error("target_reps_min 은 target_reps_max 이하.");
+    }
+  } else if ((target_reps_min !== null) !== (target_reps_max !== null)) {
+    throw new Error("target_reps_min 과 target_reps_max 는 같이 입력 (둘 다 또는 둘 다 생략).");
+  }
+
   const routine = {
     slug, display_name, progression, unit, category,
     default_rpe_target: typeof args.default_rpe_target === "number" ? args.default_rpe_target : 8,
     default_increment: typeof args.default_increment === "number" ? args.default_increment : null,
     weekly_cap: typeof args.weekly_cap === "number" ? args.weekly_cap : null,
+    target_sets,
+    target_reps,
+    target_reps_min,
+    target_reps_max,
     defined_at: nowIso(),
   };
   await data.set(`routine:${slug}`, routine);
@@ -763,6 +799,17 @@ async function nextTarget(args: any, data: Data) {
   return await computeNextTarget(slug, data);
 }
 
+function routinePlan(routine: any) {
+  const target_sets = typeof routine.target_sets === "number" ? routine.target_sets : null;
+  const target_reps = typeof routine.target_reps === "number" ? routine.target_reps : null;
+  const minOk = typeof routine.target_reps_min === "number";
+  const maxOk = typeof routine.target_reps_max === "number";
+  const target_reps_range = (minOk && maxOk)
+    ? { min: routine.target_reps_min, max: routine.target_reps_max }
+    : null;
+  return { target_sets, target_reps, target_reps_range };
+}
+
 async function computeNextTarget(slug: string, data: Data) {
   const routine = await data.get(`routine:${slug}`);
   if (!routine) throw new Error(`등록되지 않은 운동 slug: ${slug}.`);
@@ -771,8 +818,10 @@ async function computeNextTarget(slug: string, data: Data) {
     .map(r => r.value).filter(nonNull)
     .sort((a: any, b: any) => String(a.performed_at).localeCompare(String(b.performed_at)));
 
+  const plan = routinePlan(routine);
+
   if (sessions.length === 0) {
-    return { next_target: null, reason: "세션 기록 없음 — 시작 값은 사용자가 선택." };
+    return { next_target: null, plan, reason: "세션 기록 없음 — 시작 값은 사용자가 선택." };
   }
 
   const last: any = sessions[sessions.length - 1];
@@ -829,6 +878,7 @@ async function computeNextTarget(slug: string, data: Data) {
     unit: routine.unit,
     progression,
     direction,
+    plan,
     basis: {
       last_avg_value: lastAvgValue,
       last_avg_rpe: lastAvgRpe,
@@ -873,9 +923,9 @@ const TEMPLATES = [
     match: /(근력|벤치|스쿼트|데드|3대|strength|bench|squat|deadlift|powerlift)/i,
     label: "3대 운동 루틴 표준 셋업",
     routines: [
-      { slug: "squat", display_name: "백 스쿼트", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5 },
-      { slug: "bench_press", display_name: "벤치프레스", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5 },
-      { slug: "deadlift", display_name: "데드리프트", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5 },
+      { slug: "squat", display_name: "백 스쿼트", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5, target_sets: 3, target_reps: 5 },
+      { slug: "bench_press", display_name: "벤치프레스", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5, target_sets: 3, target_reps: 5 },
+      { slug: "deadlift", display_name: "데드리프트", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5, target_sets: 3, target_reps: 5 },
     ],
     facts: [
       { axis: "exercise", slug: "min_plate_increment_kg", label: "최소 plate 증분", value_example: { v: 2.5 }, hint: "헬스장에 1.25kg 원판이 없으면 v: 5 로 등록." },
@@ -909,7 +959,7 @@ const TEMPLATES = [
       { slug: "vo2max", display_name: "VO2max", unit: "mL/kg/min", priority: "normal" },
     ],
     routines: [
-      { slug: "run_5k", display_name: "5km 러닝", progression: "time", unit: "seconds", default_rpe_target: 8 },
+      { slug: "run_5k", display_name: "5km 러닝", progression: "time", unit: "seconds", default_rpe_target: 8, target_sets: 1 },
     ],
   },
 ];
@@ -989,7 +1039,7 @@ function buildDashboardHtml(tab: string, s: any): string {
   if (tab === "overview") {
     content += renderOverviewCard(s);
   } else if (tab === "exercise") {
-    content += renderSplitPlanCard(s.active_split_plan);
+    content += renderSplitPlanCard(s.active_split_plan, s.routines);
     content += renderExerciseCard(s.routines, s.recent_activities);
     content += renderFactsCard("운동 환경/장비/제약", s.user_facts.exercise);
   } else if (tab === "metrics") {
@@ -1065,7 +1115,7 @@ function renderOverviewCard(s: any): string {
   html += `</div>`;
 
   if (s.active_split_plan) {
-    html += renderTodayBucketCard(s.active_split_plan);
+    html += renderTodayBucketCard(s.active_split_plan, s.routines);
   }
 
   const critical = s.metrics.filter((m: any) => m.priority === "critical" && m.in_target === false);
@@ -1116,15 +1166,25 @@ function renderOverviewCard(s: any): string {
   return html;
 }
 
-function renderTodayBucketCard(plan: any): string {
+function formatRoutineOrder(routine_slugs: any[], routines: any[]): string {
+  const list = Array.isArray(routine_slugs) ? routine_slugs : [];
+  if (list.length === 0) return "";
+  const nameOf = (slug: string) => {
+    const r = routines.find((x: any) => x?.slug === slug);
+    return r?.display_name || slug;
+  };
+  return list.map((slug: any, i: number) => `${i + 1}. ${escapeHtml(nameOf(String(slug)))}`).join(" → ");
+}
+
+function renderTodayBucketCard(plan: any, routines: any[] = []): string {
   const kind = plan.assignment?.kind;
   let html = `<div class="card"><h3>오늘 차례 — ${escapeHtml(plan.name)}</h3>`;
   if (kind === "weekly") {
     const tb = plan.today_bucket;
     if (tb?.key) {
       html += `<div class="row"><div class="name">오늘 묶음</div><div class="val">${escapeHtml(tb.label)} <span class="meta">(${escapeHtml(tb.key)})</span></div></div>`;
-      const slugs = (tb.routine_slugs || []).map(escapeHtml).join(", ");
-      html += `<div class="row"><div class="name"><span class="meta">포함 운동</span></div><div class="val"><span class="meta">${slugs || "없음"}</span></div></div>`;
+      const ordered = formatRoutineOrder(tb.routine_slugs, routines);
+      html += `<div class="row"><div class="name"><span class="meta">순서</span></div><div class="val"><span class="meta">${ordered || "없음"}</span></div></div>`;
     } else {
       html += `<div class="row"><div class="name">오늘</div><div class="val"><span class="meta">휴식일</span></div></div>`;
     }
@@ -1132,8 +1192,8 @@ function renderTodayBucketCard(plan: any): string {
     const h = plan.next_bucket_hint;
     if (h) {
       html += `<div class="row"><div class="name">다음 차례</div><div class="val">${escapeHtml(h.label)} <span class="meta">(${escapeHtml(h.key)})</span></div></div>`;
-      const slugs = (h.routine_slugs || []).map(escapeHtml).join(", ");
-      html += `<div class="row"><div class="name"><span class="meta">포함 운동</span></div><div class="val"><span class="meta">${slugs || "없음"}</span></div></div>`;
+      const ordered = formatRoutineOrder(h.routine_slugs, routines);
+      html += `<div class="row"><div class="name"><span class="meta">순서</span></div><div class="val"><span class="meta">${ordered || "없음"}</span></div></div>`;
       if (h.last_session_at) {
         html += `<div class="row"><div class="name"><span class="meta">직전 ${escapeHtml(h.last_bucket_key)}</span></div><div class="val"><span class="meta">${escapeHtml(String(h.last_session_at).slice(0, 10))}</span></div></div>`;
       } else if (h.reason) {
@@ -1147,7 +1207,7 @@ function renderTodayBucketCard(plan: any): string {
   return html;
 }
 
-function renderSplitPlanCard(plan: any): string {
+function renderSplitPlanCard(plan: any, routines: any[] = []): string {
   if (!plan) {
     return '<div class="card"><h3>분할 계획</h3><div class="empty">활성 분할 없음 — 체리피커 모드 또는 미설정.</div></div>';
   }
@@ -1185,8 +1245,8 @@ function renderSplitPlanCard(plan: any): string {
 
   html += `<div class="card"><h3>분할 묶음 상세 (${plan.buckets.length})</h3>`;
   for (const b of plan.buckets) {
-    const slugs = (b.routine_slugs || []).map(escapeHtml).join(", ");
-    html += `<div class="row"><div class="name">${escapeHtml(b.key)} · ${escapeHtml(b.label)}</div><div class="val"><span class="meta">${slugs || "없음"}</span></div></div>`;
+    const ordered = formatRoutineOrder(b.routine_slugs, routines);
+    html += `<div class="row"><div class="name">${escapeHtml(b.key)} · ${escapeHtml(b.label)}</div><div class="val"><span class="meta">${ordered || "없음"}</span></div></div>`;
   }
   html += "</div>";
   return html;
@@ -1215,6 +1275,17 @@ function renderMetricsCard(metrics: any[]): string {
   return `<div class="card"><h3>건강 지표 (${metrics.length})</h3>${rows}</div>`;
 }
 
+function formatRoutinePlan(r: any): string {
+  const sets = typeof r.target_sets === "number" ? r.target_sets : null;
+  if (sets === null) return "";
+  const reps = typeof r.target_reps === "number" ? r.target_reps : null;
+  const minOk = typeof r.target_reps_min === "number";
+  const maxOk = typeof r.target_reps_max === "number";
+  if (reps !== null) return `${sets}×${reps}`;
+  if (minOk && maxOk) return `${sets}×${r.target_reps_min}-${r.target_reps_max}`;
+  return `${sets}세트`;
+}
+
 function renderExerciseCard(routines: any[], activities: any[]): string {
   let html = '<div class="card"><h3>운동 루틴</h3>';
   if (routines.length === 0 && activities.length === 0) {
@@ -1224,10 +1295,12 @@ function renderExerciseCard(routines: any[], activities: any[]): string {
   for (const r of routines) {
     const last = r.last_session;
     const progBadge = r.progression ? `<span class="meta">(${escapeHtml(r.progression)})</span>` : "";
+    const planStr = formatRoutinePlan(r);
+    const planHtml = planStr ? ` <span class="meta">· ${escapeHtml(planStr)}</span>` : "";
     const summary = last
       ? `${last.sets.length}세트 · ${escapeHtml(String(last.performed_at).slice(0, 10))}`
       : '<span class="meta">기록 없음</span>';
-    html += `<div class="row"><div class="name">${escapeHtml(r.display_name)} ${progBadge}</div><div class="val">${summary}</div></div>`;
+    html += `<div class="row"><div class="name">${escapeHtml(r.display_name)} ${progBadge}${planHtml}</div><div class="val">${summary}</div></div>`;
   }
   if (activities.length > 0) {
     html += `<div class="meta" style="margin:8px 0 4px">최근 7일 활동 ${activities.length}건</div>`;

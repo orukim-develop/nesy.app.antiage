@@ -32,15 +32,32 @@
 
 `define_routine_exercise` 는 어떤 축으로 성장할지 `progression` 으로 명시:
 
-| progression | 진척 방향 | 예시 | 기본 증분 |
-|---|---|---|---|
-| `weight` | 무게 ↑ | 스쿼트 100kg → 102.5kg | compound 2.5 / isolation 1.25 (kg) |
-| `time` | 시간 ↓ (낮을수록 좋음) | 4km 기어가기 10분 → 3분 | 30 (초 가정) |
-| `distance` | 거리 ↑ (시간 고정) | 1시간 RowErg 12500m → 13000m | 100 (m 가정) |
-| `reps` | 횟수 ↑ (자체중) | 푸시업 max 20회 → 22회 | 1 |
-| `hold` | 유지 시간 ↑ | 플랭크 60초 → 70초 | 5 (초 가정) |
+| progression | 진척 방향 | 예시 | 기본 증분 | 기본 target_sets |
+|---|---|---|---|---|
+| `weight` | 무게 ↑ | 스쿼트 100kg → 102.5kg | compound 2.5 / isolation 1.25 (kg) | 3 |
+| `time` | 시간 ↓ (낮을수록 좋음) | 4km 기어가기 10분 → 3분 | 30 (초 가정) | 1 |
+| `distance` | 거리 ↑ (시간 고정) | 1시간 RowErg 12500m → 13000m | 100 (m 가정) | 1 |
+| `reps` | 횟수 ↑ (자체중) | 푸시업 max 20회 → 22회 | 1 | 3 |
+| `hold` | 유지 시간 ↑ | 플랭크 60초 → 70초 | 5 (초 가정) | 3 |
 
 **표준 인체 가정 금지** — 다리/팔이 없거나 의수·의족 사용자도 본인이 할 수 있는 형태(예 "기어가기", "한팔 푸시업")를 progression 에 맞게 등록 가능.
+
+### 계획 세트·횟수 (target_sets / target_reps / 범위)
+
+`define_routine_exercise` 는 계획된 구조도 같이 저장:
+
+- `target_sets` — 계획 세트 수. 생략 시 위 표 기본값.
+- `target_reps` — 계획 고정 횟수 (예 `5x5` 의 5). progression=weight/reps 에 자연스러움.
+- `target_reps_min` / `target_reps_max` — 계획 횟수 범위 (예 8-12). `target_reps` 가 있으면 무시.
+- 모두 선택값. 시간/거리/유지시간 진척에서는 보통 횟수 비움.
+
+**축구·테니스·등산을 루틴으로 등록하고 싶을 때** — 가능. 단 progressive overload 가 핵심이라 `progression` 선택은 필수:
+- 축구 진행 시간 늘리고 싶다 → `progression=time` (단, time 은 "낮을수록 좋음" 이라 적합 X. 차라리 → `progression=hold` 또는 `distance`)
+- 등산 거리·고도 늘리고 싶다 → `progression=distance`
+- 테니스 랠리 횟수 늘리고 싶다 → `progression=reps`
+- 자유롭게 활동량만 기록하려면 `log_activity` 가 더 자연스러움. AI 가 사용자 의도 확인 후 결정.
+
+위젯 표시 예 — `백 스쿼트 (weight) · 3×5` / `푸시업 (reps) · 3×8-12` / `5km 러닝 (time) · 1세트`.
 
 ## RPE — 힘들었음 점수
 

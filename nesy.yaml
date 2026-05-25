@@ -29,6 +29,12 @@ tools:
       category 는 progression=weight 일 때만 의미: compound=다관절 → 기본 증분 2.5kg, isolation=단관절 → 1.25kg.
       compound 의 경우 fact:exercise:min_plate_increment_kg 가 등록되어 있으면 그 값이 우선.
       비무게 progression 의 기본 증분: time 30(초 가정) / distance 100(m 가정) / reps 1 / hold 5(초 가정). default_increment 로 덮어쓸 수 있음.
+
+      계획된 세트·횟수(target_sets, target_reps, target_reps_min/max):
+        target_sets — 계획 세트 수. 생략 시 progression 별 기본 (weight/reps/hold=3, time/distance=1).
+        target_reps — 계획 고정 횟수 (예 5x5 의 5). progression=weight 또는 reps 에 자연스럽지만 다른 progression 에도 허용.
+        target_reps_min / target_reps_max — 계획 횟수 범위 (예 8~12). target_reps 가 같이 들어오면 무시(고정값 우선).
+        모두 선택값 — 축구·테니스·등산 등도 사용자가 루틴 추적 원하면 등록 가능 (progression=time 또는 distance 자연스러움). 비-rep 진척에서는 target_reps 미설정 자연스러움.
     inputSchema:
       type: object
       properties:
@@ -56,6 +62,18 @@ tools:
         weekly_cap:
           type: number
           description: "선택. 주당 최대 진척 누계 (routine.unit 기준). 과도한 진척 방지용."
+        target_sets:
+          type: integer
+          description: "선택. 계획 세트 수 (1+). 생략 시 progression 별 기본 — weight/reps/hold=3, time/distance=1."
+        target_reps:
+          type: integer
+          description: "선택. 계획 고정 횟수 (1+, 예 5x5 의 5). progression=weight/reps 에 자연스러움. target_reps_min/max 보다 우선."
+        target_reps_min:
+          type: integer
+          description: "선택. 계획 횟수 범위 하한 (1+). target_reps_max 와 함께 사용."
+        target_reps_max:
+          type: integer
+          description: "선택. 계획 횟수 범위 상한 (target_reps_min 이상)."
       required: [slug, display_name, progression, unit]
 
   - name: log_routine_session
