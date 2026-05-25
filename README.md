@@ -70,6 +70,20 @@
 
 `progression=time` 은 방향 반전 — 쉬웠다면 다음엔 더 빠른 시간을 목표로 한다.
 
+## progression 추론과 분리되는 3가지 케이스
+
+운동 메모리(progression weight) 오염을 막기 위해 `log_routine_session` 에는 3가지 분리 장치가 있다:
+
+| 케이스 | 필드 | 효과 |
+|---|---|---|
+| 워밍업 세트 | `sets[].is_warmup=true` | 그 세트만 `next_target` 평균 계산에서 제외. 이력엔 남음 |
+| 디로드 세션 (그날만 가볍게) | `is_deload=true` (세션 레벨) | 세션 통째로 `next_target` 추론 + `weekly_cap` 누계에서 제외 |
+| 슈퍼셋/자이언트셋 (여러 운동 묶음) | `superset_group="ss-<rand>"` (세션 레벨, AI 가 키 생성) | 같은 키로 호출된 routine 세션들 묶임. 각 routine progression 은 독립 |
+
+세 경우 모두 progression 메모리에 영향 없음. AI 는 사용자에게 코드값 노출하지 않고 사용자 발화 언어로 자연스럽게 확인 후 내부적으로 변환 — 예 "앞 2세트는 워밍업으로 기록할까요?" / "오늘은 디로드 데이로 기록할게요 — progression 추적엔 영향 없어요" / "벤치+푸시업 슈퍼셋으로 묶을게요".
+
+위젯 표시 예 — `[디로드] 5세트 · 2026-05-25` / `3세트 +W2 · 2026-05-25` (본세트 3 + 워밍업 2) / `5세트 · 2026-05-25 [SS]` (슈퍼셋 묶음).
+
 ## 분할 계획 (split_plan)
 
 `define_split_plan` 으로 운동을 묶음(bucket)으로 묶고 시점에 매핑. `is_active=true` 는 1개만 — 다른 활성 plan 자동 비활성화. 여러 개 저장 가능 (시각화·비교용).

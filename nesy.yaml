@@ -80,12 +80,19 @@ tools:
     description: |
       루틴 운동의 한 세션(여러 세트 묶음)을 기록한다.
       각 세트 구조는 routine.progression 에 따라 다름:
-        weight: { reps, weight, rpe }
-        time: { time, rpe }
-        distance: { distance, rpe }
-        reps: { reps, rpe }
-        hold: { hold, rpe }
+        weight: { reps, weight, rpe, is_warmup? }
+        time: { time, rpe, is_warmup? }
+        distance: { distance, rpe, is_warmup? }
+        reps: { reps, rpe, is_warmup? }
+        hold: { hold, rpe, is_warmup? }
       rpe 는 1~10 '힘들었음 점수' (높을수록 힘듦). 0 도 허용(전혀 힘들지 않음).
+
+      progression 추론과 분리되는 3가지 케이스 — 다음 추천(next_target) 계산엔 영향 안 줌:
+        1) 워밍업 세트: 각 세트의 is_warmup=true 로 표시. 추론에서 자동 제외(이력엔 남음).
+        2) 디로드 세션 (컨디션 안 좋아 그날만 무게↓): is_deload=true. 세션 통째로 추론 제외 + weekly_cap 누계에서도 제외.
+        3) 슈퍼셋/자이언트셋 (여러 운동을 한 묶음으로): superset_group 에 같은 키 부여하고 묶을 각 routine 의 log_routine_session 을 같은 키로 호출. 묶음 메타데이터일 뿐, 각 routine progression 은 독립 추론.
+
+      AI 는 사용자에게 'is_warmup' / 'is_deload' / 'superset_group' 같은 코드값 노출 금지 — 사용자 발화 언어로 합의 후 내부적으로 변환.
       반환: 저장 결과 + 다음 세션 추천값(next_target). 별도로 next_target 다시 부를 필요 없음.
     inputSchema:
       type: object
@@ -95,13 +102,19 @@ tools:
           description: 등록된 routine 의 slug.
         sets:
           type: array
-          description: "세트 배열. progression 에 맞는 필드를 채워야 한다 — weight: reps/weight/rpe / time: time/rpe / distance: distance/rpe / reps: reps/rpe / hold: hold/rpe."
+          description: "세트 배열. progression 에 맞는 필드 + 선택 is_warmup. 예 weight progression: { reps, weight, rpe, is_warmup? }. is_warmup=true 인 세트는 progression 추론에서 제외."
         performed_at:
           type: string
           description: "ISO 8601 시각. 생략하면 호출 시점."
         note:
           type: string
           description: 선택. 컨디션·부상 메모.
+        is_deload:
+          type: boolean
+          description: "선택. 디로드 세션이면 true (그날만 가볍게). 세션 통째로 progression 추론 제외. 기본 false."
+        superset_group:
+          type: string
+          description: "선택. 슈퍼셋/자이언트셋 그룹 키 (1~64자, AI 가 'ss-<짧은랜덤>' 형태로 생성). 같은 키로 호출된 다른 routine 세션들과 묶임. 각 routine progression 엔 영향 없음."
       required: [slug, sets]
 
   - name: log_activity

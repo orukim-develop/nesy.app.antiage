@@ -30,6 +30,7 @@ const AI_RULES = [
   "운동 등록 시 계획된 세트수·횟수(또는 범위) 사용자 발화 언어로 함께 합의 — 무게/횟수 진척이면 횟수도 같이(한국어 예 '3세트 5회' 또는 '3세트 8~12회 범위', 영어 예 '3 sets of 5 reps' 또는 '3 sets of 8-12 reps'), 시간/거리/유지시간 진척이면 세트수만 자연스럽게 (보통 1세트). 'target_sets=3' 같이 코드값 노출 금지. 사용자가 묻지 않으면 기본값 사용 OK.",
   "진척 추적 대상 vs 자유 활동 분류 모호하면 사용자 발화 언어로 직접 질문 (한국어 예 '이거 진척 추적할까요, 아니면 그냥 활동 기록만 할까요?', 영어 예 'Track this as progression, or just log it as an activity?'). 축구·테니스·등산 같은 스포츠는 보통 log_activity 가 자연스럽지만, 사용자가 '시간 늘리기' / '거리 늘리기' 같은 축으로 진척 추적 원하면 적절한 progression 으로 루틴 등록도 가능 — 사용자 의도 확인 후.",
   "RPE 는 1~10 (높을수록 힘듦) — 사용자에게는 RPE 용어 노출 금지, 사용자 언어로 풀어 묻기 (한국어 '힘들었음 점수', 영어 'how hard it felt (1-10)').",
+  "세션 기록 시 progression 추론과 분리되는 3가지 케이스 자동 인지 — (a) 워밍업 세트는 sets[].is_warmup=true (b) 컨디션 안 좋아 그날만 가볍게 한 디로드 세션은 is_deload=true (c) 여러 운동을 한 묶음으로 한 슈퍼셋/자이언트셋은 같은 superset_group 키 ('ss-<짧은랜덤>' 형식, AI 가 생성) 로 묶을 routine 들 각각 log_routine_session. 모두 next_target 추론에서 자동 제외/분리되어 운동 메모리(progression weight) 오염 안 됨. 사용자에게는 코드값/필드명 노출 금지, 사용자 발화 언어로 자연스럽게 확인 — 한국어 예 '앞 2세트는 워밍업으로 기록할까요?' / '오늘은 디로드 데이로 기록할게요 — progression 추적엔 영향 없어요' / '벤치+푸시업 슈퍼셋으로 묶을게요'. 영어 예 'Mark the first 2 sets as warmup?' / 'Logging today as a deload — won\\'t affect progression' / 'Grouping bench+pushup as a superset'.",
   "분할 등록 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 분할 등록 안 함.",
 ];
 
@@ -245,33 +246,34 @@ function normalizeSet(s: any, progression: string): any {
   if (!Number.isFinite(rpe) || rpe < 0 || rpe > 10) {
     throw new Error("각 세트의 rpe 는 0~10 사이 숫자 ('힘들었음 점수').");
   }
+  const is_warmup = s.is_warmup === true;
   switch (progression) {
     case "weight": {
       const reps = Number(s.reps), weight = Number(s.weight);
       if (!Number.isFinite(reps) || !Number.isFinite(weight)) {
         throw new Error("progression=weight 의 각 세트는 reps/weight 숫자 필수.");
       }
-      return { reps, weight, rpe };
+      return { reps, weight, rpe, is_warmup };
     }
     case "time": {
       const time = Number(s.time);
       if (!Number.isFinite(time)) throw new Error("progression=time 의 각 세트는 time 숫자 필수.");
-      return { time, rpe };
+      return { time, rpe, is_warmup };
     }
     case "distance": {
       const distance = Number(s.distance);
       if (!Number.isFinite(distance)) throw new Error("progression=distance 의 각 세트는 distance 숫자 필수.");
-      return { distance, rpe };
+      return { distance, rpe, is_warmup };
     }
     case "reps": {
       const reps = Number(s.reps);
       if (!Number.isFinite(reps)) throw new Error("progression=reps 의 각 세트는 reps 숫자 필수.");
-      return { reps, rpe };
+      return { reps, rpe, is_warmup };
     }
     case "hold": {
       const hold = Number(s.hold);
       if (!Number.isFinite(hold)) throw new Error("progression=hold 의 각 세트는 hold 숫자 필수.");
-      return { hold, rpe };
+      return { hold, rpe, is_warmup };
     }
     default: throw new Error(`알 수 없는 progression: ${progression}`);
   }
@@ -307,7 +309,14 @@ async function logSession(args: any, data: Data) {
   const normalized = sets.map((s: any) => normalizeSet(s, progression));
   const performed_at = String(args.performed_at ?? nowIso());
   const note = args.note ? String(args.note) : undefined;
-  const session: any = { slug, sets: normalized, performed_at, progression };
+  const is_deload = args.is_deload === true;
+  let superset_group: string | null = null;
+  if (args.superset_group !== undefined && args.superset_group !== null && args.superset_group !== "") {
+    const sg = String(args.superset_group).trim();
+    if (sg.length === 0 || sg.length > 64) throw new Error("superset_group 은 1~64자.");
+    superset_group = sg;
+  }
+  const session: any = { slug, sets: normalized, performed_at, progression, is_deload, superset_group };
   if (note) session.note = note;
   await data.set(`session:${slug}:${performed_at}:${shortRand()}`, session);
   const next = await computeNextTarget(slug, data).catch((e: any) => ({ error: e.message }));
@@ -824,12 +833,28 @@ async function computeNextTarget(slug: string, data: Data) {
     return { next_target: null, plan, reason: "세션 기록 없음 — 시작 값은 사용자가 선택." };
   }
 
-  const last: any = sessions[sessions.length - 1];
+  // 디로드 세션은 progression 추론에서 통째 제외
+  const progSessions = sessions.filter((s: any) => s.is_deload !== true);
+  const skipped_deload = sessions.length - progSessions.length;
+
+  if (progSessions.length === 0) {
+    return { next_target: null, plan, reason: `최근 ${sessions.length}개 세션이 모두 디로드 — 추론 가능한 본세션 없음.`, sessions_skipped_deload: skipped_deload };
+  }
+
+  const last: any = progSessions[progSessions.length - 1];
+  // 워밍업 세트 제외
+  const workSets = last.sets.filter((s: any) => s.is_warmup !== true);
+  const skipped_warmup = last.sets.length - workSets.length;
+
+  if (workSets.length === 0) {
+    return { next_target: null, plan, reason: "직전 비-디로드 세션의 본세트 없음 (전부 워밍업).", sessions_skipped_deload: skipped_deload, warmup_sets_skipped: skipped_warmup };
+  }
+
   const progression = routine.progression || "weight";
   const direction: "increase" | "decrease" = progression === "time" ? "decrease" : "increase";
 
-  const lastAvgRpe = mean(last.sets.map((s: any) => Number(s.rpe)));
-  const lastAvgValue = mean(last.sets.map((s: any) => setValue(s, progression)));
+  const lastAvgRpe = mean(workSets.map((s: any) => Number(s.rpe)));
+  const lastAvgValue = mean(workSets.map((s: any) => setValue(s, progression)));
   const target = typeof routine.default_rpe_target === "number" ? routine.default_rpe_target : 8;
 
   let increment: number = typeof routine.default_increment === "number"
@@ -853,21 +878,25 @@ async function computeNextTarget(slug: string, data: Data) {
   const delta = direction === "increase" ? push * increment : -(push * increment);
   let proposed = lastAvgValue + delta;
 
+  // weekly_cap baseline 도 디로드/워밍업 제외
   let cap_applied = false;
   if (typeof routine.weekly_cap === "number" && routine.weekly_cap > 0) {
     const sevenDaysAgo = Date.now() - 7 * 86400 * 1000;
-    const recent = sessions.filter((s: any) => new Date(s.performed_at).getTime() >= sevenDaysAgo);
-    if (recent.length > 0) {
-      const earliestAvg = mean(recent[0].sets.map((s: any) => setValue(s, progression)));
-      if (direction === "increase") {
-        if (proposed - earliestAvg > routine.weekly_cap) {
-          proposed = earliestAvg + routine.weekly_cap;
-          cap_applied = true;
-        }
-      } else {
-        if (earliestAvg - proposed > routine.weekly_cap) {
-          proposed = earliestAvg - routine.weekly_cap;
-          cap_applied = true;
+    const recentProg = progSessions.filter((s: any) => new Date(s.performed_at).getTime() >= sevenDaysAgo);
+    if (recentProg.length > 0) {
+      const earliestWorkSets = recentProg[0].sets.filter((s: any) => s.is_warmup !== true);
+      if (earliestWorkSets.length > 0) {
+        const earliestAvg = mean(earliestWorkSets.map((s: any) => setValue(s, progression)));
+        if (direction === "increase") {
+          if (proposed - earliestAvg > routine.weekly_cap) {
+            proposed = earliestAvg + routine.weekly_cap;
+            cap_applied = true;
+          }
+        } else {
+          if (earliestAvg - proposed > routine.weekly_cap) {
+            proposed = earliestAvg - routine.weekly_cap;
+            cap_applied = true;
+          }
         }
       }
     }
@@ -889,6 +918,10 @@ async function computeNextTarget(slug: string, data: Data) {
       delta,
       weekly_cap_applied: cap_applied,
       session_count: sessions.length,
+      sessions_skipped_deload: skipped_deload,
+      warmup_sets_skipped_in_last: skipped_warmup,
+      work_sets_used: workSets.length,
+      last_session_superset_group: last.superset_group ?? null,
     },
   };
 }
@@ -1286,6 +1319,23 @@ function formatRoutinePlan(r: any): string {
   return `${sets}세트`;
 }
 
+function formatLastSessionSummary(last: any): string {
+  if (!last) return '<span class="meta">기록 없음</span>';
+  const date = escapeHtml(String(last.performed_at).slice(0, 10));
+  const total = last.sets.length;
+  const warmupCount = last.sets.filter((s: any) => s.is_warmup === true).length;
+  const workCount = total - warmupCount;
+  const supersetBadge = last.superset_group ? ` <span class="badge due">SS</span>` : "";
+
+  if (last.is_deload === true) {
+    return `<span class="badge warn">디로드</span> ${total}세트 · ${date}${supersetBadge}`;
+  }
+  if (warmupCount > 0) {
+    return `${workCount}세트 <span class="meta">+W${warmupCount}</span> · ${date}${supersetBadge}`;
+  }
+  return `${total}세트 · ${date}${supersetBadge}`;
+}
+
 function renderExerciseCard(routines: any[], activities: any[]): string {
   let html = '<div class="card"><h3>운동 루틴</h3>';
   if (routines.length === 0 && activities.length === 0) {
@@ -1293,13 +1343,10 @@ function renderExerciseCard(routines: any[], activities: any[]): string {
     return html;
   }
   for (const r of routines) {
-    const last = r.last_session;
     const progBadge = r.progression ? `<span class="meta">(${escapeHtml(r.progression)})</span>` : "";
     const planStr = formatRoutinePlan(r);
     const planHtml = planStr ? ` <span class="meta">· ${escapeHtml(planStr)}</span>` : "";
-    const summary = last
-      ? `${last.sets.length}세트 · ${escapeHtml(String(last.performed_at).slice(0, 10))}`
-      : '<span class="meta">기록 없음</span>';
+    const summary = formatLastSessionSummary(r.last_session);
     html += `<div class="row"><div class="name">${escapeHtml(r.display_name)} ${progBadge}${planHtml}</div><div class="val">${summary}</div></div>`;
   }
   if (activities.length > 0) {
