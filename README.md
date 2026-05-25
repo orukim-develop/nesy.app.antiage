@@ -42,6 +42,27 @@
 
 **표준 인체 가정 금지** — 다리/팔이 없거나 의수·의족 사용자도 본인이 할 수 있는 형태(예 "기어가기", "한팔 푸시업")를 progression 에 맞게 등록 가능.
 
+## 운동 4단계 사이클
+
+```
+① 등록 (define_routine_exercise)
+       — 진척축·단위·계획·능력치·메모
+       ↓
+② 묶음 (define_split_plan, 선택)
+       — 요일별 / 순환 / 그룹만
+       ↓
+③ 실행 (log_routine_session)
+       — 세트·RPE·워밍업·디로드·슈퍼셋
+       ↓ 코드가 자동
+④ 다음 목표 stash (routine.next_session_goal)
+       — 자동 source="auto", 디로드 직후엔 갱신 X
+       ↓
+다음 세션 시 get_state.routines[].next_session_goal 그대로 사용
+(memo 변경·새 정보·null 시만 next_target 재호출)
+```
+
+사용자가 직접 다음 목표를 지정하고 싶으면 `update_routine_state(slug, next_session_goal={value, note?})` — source="manual" 로 마크. 이후 자동 stash 가 덮어씀.
+
 ## working_value — "공식" 현재 능력치
 
 각 루틴은 사용자가 정상적으로 다루는 운동값(`working_value`) 을 저장한다. `next_target` 계산의 **base** — 다음 추천값은 `working_value + (RPE 기반 delta)`. 없으면 직전 본세트 평균이 fallback.
@@ -98,9 +119,20 @@ progression_state: {
   baseline_at,
   direction,            // "increase" | "decrease"
 }
+
+next_session_goal: {    // null 또는
+  value,                // 다음 세션 추천 숫자
+  computed_at,
+  source,               // "auto" (log_routine_session 자동 stash) | "manual" (사용자 지정)
+  note,                 // manual 일 때만 사용자 메모 (200자)
+}
 ```
 
 디로드 세션·워밍업 세트는 모두 제외. AI 가 진행 상황·정체·후퇴를 한눈에 판단 가능.
+
+## 마이그레이션
+
+새 필드(`next_session_goal`) 추가는 **마이그레이션 불필요** — 기존 routine 은 `null` 로 유지되고, 다음 `log_routine_session` 호출 순간 자동 stash 됨. AI 룰이 "null 이면 `next_target` 재호출" 명시하니 호환됨.
 
 ### 계획 세트·횟수 (target_sets / target_reps / 범위)
 

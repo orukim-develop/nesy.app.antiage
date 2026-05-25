@@ -31,6 +31,7 @@ const AI_RULES = [
   "진척 추적 대상 vs 자유 활동 분류 모호하면 사용자 발화 언어로 직접 질문 (한국어 예 '이거 진척 추적할까요, 아니면 그냥 활동 기록만 할까요?', 영어 예 'Track this as progression, or just log it as an activity?'). 축구·테니스·등산 같은 스포츠는 보통 log_activity 가 자연스럽지만, 사용자가 '시간 늘리기' / '거리 늘리기' 같은 축으로 진척 추적 원하면 적절한 progression 으로 루틴 등록도 가능 — 사용자 의도 확인 후.",
   "RPE 는 1~10 (높을수록 힘듦) — 사용자에게는 RPE 용어 노출 금지, 사용자 언어로 풀어 묻기 (한국어 '힘들었음 점수', 영어 'how hard it felt (1-10)').",
   "세션 기록 시 progression 추론과 분리되는 3가지 케이스 자동 인지 — (a) 워밍업 세트는 sets[].is_warmup=true (b) 컨디션 안 좋아 그날만 가볍게 한 디로드 세션은 is_deload=true (c) 여러 운동을 한 묶음으로 한 슈퍼셋/자이언트셋은 같은 superset_group 키 ('ss-<짧은랜덤>' 형식, AI 가 생성) 로 묶을 routine 들 각각 log_routine_session. 모두 next_target 추론에서 자동 제외/분리되어 운동 메모리(progression weight) 오염 안 됨. 사용자에게는 코드값/필드명 노출 금지, 사용자 발화 언어로 자연스럽게 확인 — 한국어 예 '앞 2세트는 워밍업으로 기록할까요?' / '오늘은 디로드 데이로 기록할게요 — progression 추적엔 영향 없어요' / '벤치+푸시업 슈퍼셋으로 묶을게요'. 영어 예 'Mark the first 2 sets as warmup?' / 'Logging today as a deload — won\\'t affect progression' / 'Grouping bench+pushup as a superset'.",
+  "★ 운동은 4단계 사이클 — ① 등록(define_routine_exercise) → ② 묶음(define_split_plan, 선택) → ③ 실행(log_routine_session) → ④ 비교+다음 목표(routine.next_session_goal). log_routine_session 직후 코드가 자동으로 next_target 계산해서 routine.next_session_goal 에 stash (디로드 세션 직후는 갱신 X, 기존 stash 유지). 다음 세션 계획 시 next_target 다시 호출 X — get_state.routines[].next_session_goal 그대로 사용. 단 (a) memo 가 바뀌었거나 (b) 사용자가 새 정보(부상·컨디션 등) 를 줬거나 (c) stash 가 null 이면 next_target 재호출. 사용자가 직접 '다음엔 무조건 X 도전' 같이 목표 지정하면 update_routine_state 의 next_session_goal patch (source=manual 로 자동 마크).",
   "★ working_value 는 사용자의 '공식 현재 능력치' — next_target 계산의 base. 코드는 자동 갱신 X. 세션 기록 직후 next_target 호출 시 working_value_recommendation.recommend_update=true 가 뜨면 (예 '직전 본세트 평균이 working_value 보다 큼') 반드시 사용자에게 사용자 발화 언어로 묻고 합의 받은 뒤 update_routine_state 호출 — 한국어 예 '오늘 100kg 3세트 무난히 했어요. 현재 능력치를 100kg 으로 갱신할까요?' / 영어 예 'You handled 100kg × 3 cleanly today. Update your working value to 100kg?'. 합의 없이 자동 갱신 금지. 'working_value' 같은 영어 코드값 노출 금지 — '현재 능력치' / 'working value' / 'standard weight' 처럼 자연어로.",
   "★ 운동 계획·다음 세트 추천 시 routine.memo 반드시 먼저 읽고 반영. 메모는 자유 텍스트 — AI 가 해석. 예 '이 머신은 7kg 단위로만 증량' 이면 next_target 그대로 쓰지 말고 7kg 배수로 라운드 + default_increment 도 7로 update_routine_state. '어깨 부상 회복 중 — 더 증량 X' 면 RPE 가 낮아도 증량 추천하지 말 것. '8월까지 디로드 위주' 면 is_deload 권장. 메모와 next_target 추천이 충돌하면 메모가 우선. 메모 등록/수정 시 코드값 노출 금지 — '루틴 메모' / 'routine memo' 처럼 자연어로 합의 후 update_routine_state 호출.",
   "분할 등록 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 분할 등록 안 함.",
@@ -355,6 +356,32 @@ async function updateRoutineState(args: any, data: Data) {
     patch.target_reps_max = newMax;
   }
 
+  // next_session_goal: { value, note? } | null
+  // 사용자 수동 지정 — source="manual" 로 마크. null = 클리어.
+  if ("next_session_goal" in args) {
+    if (args.next_session_goal === null) {
+      patch.next_session_goal = null;
+    } else if (typeof args.next_session_goal === "object") {
+      const g = args.next_session_goal;
+      const v = Number(g.value);
+      if (!Number.isFinite(v)) throw new Error("next_session_goal.value 는 숫자.");
+      let gnote: string | null = null;
+      if (g.note !== undefined && g.note !== null && g.note !== "") {
+        const n = String(g.note);
+        if (n.length > 200) throw new Error("next_session_goal.note 는 200자 이내.");
+        gnote = n;
+      }
+      patch.next_session_goal = {
+        value: v,
+        computed_at: nowIso(),
+        source: "manual",
+        note: gnote,
+      };
+    } else {
+      throw new Error("next_session_goal 은 { value, note? } 또는 null.");
+    }
+  }
+
   patch.updated_at = nowIso();
   await data.set(`routine:${slug}`, patch);
   return { routine: patch };
@@ -439,7 +466,24 @@ async function logSession(args: any, data: Data) {
   if (note) session.note = note;
   await data.set(`session:${slug}:${performed_at}:${shortRand()}`, session);
   const next = await computeNextTarget(slug, data).catch((e: any) => ({ error: e.message }));
-  return { saved: session, next_recommendation: next };
+
+  // 자동 stash — next_session_goal 갱신
+  // 디로드 세션 직후엔 갱신 X (직전 본세션 기준 유지). 워밍업만 있던 세션도 갱신 X.
+  // next.next_target 이 null 이면 (신호 부족) 갱신 X.
+  let next_session_goal_updated = false;
+  if (!is_deload && next && typeof (next as any).next_target === "number") {
+    const goal = {
+      value: (next as any).next_target,
+      computed_at: nowIso(),
+      source: "auto" as const,
+      note: null as string | null,
+    };
+    const updatedRoutine = { ...routine, next_session_goal: goal, updated_at: nowIso() };
+    await data.set(`routine:${slug}`, updatedRoutine);
+    next_session_goal_updated = true;
+  }
+
+  return { saved: session, next_recommendation: next, next_session_goal_updated };
 }
 
 async function logActivity(args: any, data: Data) {
@@ -1585,6 +1629,16 @@ function formatRoutinePlan(r: any): string {
   return `${sets}세트`;
 }
 
+function formatNextSessionGoal(r: any): string {
+  const g = r.next_session_goal;
+  if (!g || typeof g.value !== "number") return "";
+  const unit = r.unit ? escapeHtml(String(r.unit)) : "";
+  const valStr = `${roundForDisplay(g.value)}${unit ? ` ${unit}` : ""}`;
+  const srcBadge = g.source === "manual" ? ` <span class="meta">(직접 지정)</span>` : "";
+  const noteStr = g.note ? ` <span class="meta">· ${escapeHtml(String(g.note))}</span>` : "";
+  return `다음 목표 <b>${valStr}</b>${srcBadge}${noteStr}`;
+}
+
 function formatProgressionState(r: any): string {
   const ps = r.progression_state;
   if (!ps) return "";
@@ -1639,6 +1693,10 @@ function renderExerciseCard(routines: any[], activities: any[]): string {
     const stateLine = formatProgressionState(r);
     if (stateLine) {
       html += `<div class="meta" style="margin-left:4px;margin-bottom:4px">${stateLine}</div>`;
+    }
+    const goalLine = formatNextSessionGoal(r);
+    if (goalLine) {
+      html += `<div class="meta" style="margin-left:4px;margin-bottom:4px">🎯 ${goalLine}</div>`;
     }
     if (r.memo) {
       html += `<div class="meta" style="margin-left:4px;margin-bottom:6px">📝 ${escapeHtml(r.memo)}</div>`;
