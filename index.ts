@@ -35,6 +35,7 @@ const AI_RULES = [
   "★ working_value 는 사용자의 '공식 현재 능력치' — next_target 계산의 base. 코드는 자동 갱신 X. 세션 기록 직후 next_target 호출 시 working_value_recommendation.recommend_update=true 가 뜨면 (예 '직전 본세트 평균이 working_value 보다 큼') 반드시 사용자에게 사용자 발화 언어로 묻고 합의 받은 뒤 update_routine_state 호출 — 한국어 예 '오늘 100kg 3세트 무난히 했어요. 현재 능력치를 100kg 으로 갱신할까요?' / 영어 예 'You handled 100kg × 3 cleanly today. Update your working value to 100kg?'. 합의 없이 자동 갱신 금지. 'working_value' 같은 영어 코드값 노출 금지 — '현재 능력치' / 'working value' / 'standard weight' 처럼 자연어로.",
   "★ 운동 계획·다음 세트 추천 시 routine.memo 반드시 먼저 읽고 반영. 메모는 자유 텍스트 — AI 가 해석. 예 '이 머신은 7kg 단위로만 증량' 이면 next_target 그대로 쓰지 말고 7kg 배수로 라운드 + default_increment 도 7로 update_routine_state. '어깨 부상 회복 중 — 더 증량 X' 면 RPE 가 낮아도 증량 추천하지 말 것. '8월까지 디로드 위주' 면 is_deload 권장. 메모와 next_target 추천이 충돌하면 메모가 우선. 메모 등록/수정 시 코드값 노출 금지 — '루틴 메모' / 'routine memo' 처럼 자연어로 합의 후 update_routine_state 호출.",
   "분할 등록 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 분할 등록 안 함.",
+  "★ 기록 수정/삭제 — 사용자가 '아까 등록한 점심 칼로리 잘못 적었어' / '방금 측정한 혈압 지워줘' / '오늘 운동 세션 잘못 입력' 같이 말하면, get_state 의 meals_today.items[].id / metrics[].latest_id / routines[].last_session.id / recent_activities[].id 로 해당 기록의 id 를 찾아 처리. 끼니(meal) 수정은 log_meal({id: 'meal:...', ...새 값}) 로 upsert — 단순. 그 외 기록(measure/session/activity) 수정은 delete_entity({kind, id}) 후 다시 log_* — 별도 update 도구 없음. session 삭제는 자동으로 해당 routine 의 next_session_goal 재계산되어 stale stash 방지. id 는 'meal:...' / 'measure:slug:...' / 'session:slug:...' / 'activity:...' 형식의 전체 key — 사용자에게 절대 노출 금지, 내부에서만 사용. 사용자에겐 자연어로 — 한국어 예 '아까 등록한 점심(450kcal) 을 600kcal 로 수정할게요' / 영어 예 'Updating the lunch you logged earlier (450 kcal) to 600 kcal'.",
 ];
 
 export async function run({ input, data }: {
@@ -573,7 +574,17 @@ async function logMeal(args: any, data: Data) {
     carbs_g: typeof args.carbs_g === "number" ? args.carbs_g : null,
     fat_g: typeof args.fat_g === "number" ? args.fat_g : null,
   };
-  await data.set(`meal:${eaten_at}:${shortRand()}`, meal);
+  // id 가 주어지면 upsert (같은 key 덮어쓰기) — 수정용. 없으면 새 key 생성.
+  let key: string;
+  if (args.id !== undefined && args.id !== null && String(args.id).trim() !== "") {
+    key = String(args.id).trim();
+    if (!key.startsWith("meal:")) throw new Error("id 는 'meal:' 로 시작하는 전체 key.");
+    const existing = await data.get(key);
+    if (!existing) throw new Error(`id '${key}' 의 끼니 없음 — 신규 등록은 id 생략.`);
+  } else {
+    key = `meal:${eaten_at}:${shortRand()}`;
+  }
+  await data.set(key, meal);
 
   const settings = await getSettings(data);
   const today = dateInTz(settings.timezone);
@@ -602,7 +613,7 @@ async function logMeal(args: any, data: Data) {
       };
     }
   }
-  return { saved: meal, today_totals, maintenance };
+  return { saved: meal, id: key, today_totals, maintenance };
 }
 
 async function defineReminder(args: any, data: Data) {
@@ -752,7 +763,10 @@ async function deleteEntity(args: any, data: Data) {
   const id = String(args.id ?? "").trim();
   if (!id) throw new Error("id 필수.");
   let key: string;
+  let sideEffect: any = null;
+
   switch (kind) {
+    // ── 정의(definition) — id 는 slug ───────────────
     case "routine": key = `routine:${id}`; break;
     case "metric": key = `metric:${id}`; break;
     case "reminder": key = `reminder:${id}`; break;
@@ -765,9 +779,61 @@ async function deleteEntity(args: any, data: Data) {
       key = `fact:${axis}:${id}`;
       break;
     }
-    default: throw new Error("kind 는 routine / metric / reminder / fact / split_plan 중 하나.");
+
+    // ── 기록(record) — id 는 전체 key (prefix 포함) ───────
+    case "meal":
+      if (!id.startsWith("meal:")) throw new Error("meal id 는 'meal:' 로 시작하는 전체 key.");
+      key = id;
+      break;
+    case "measure":
+      if (!id.startsWith("measure:")) throw new Error("measure id 는 'measure:' 로 시작하는 전체 key.");
+      key = id;
+      break;
+    case "activity":
+      if (!id.startsWith("activity:")) throw new Error("activity id 는 'activity:' 로 시작하는 전체 key.");
+      key = id;
+      break;
+    case "session": {
+      if (!id.startsWith("session:")) throw new Error("session id 는 'session:' 로 시작하는 전체 key.");
+      // session 삭제 시 해당 routine 의 next_session_goal 도 재계산
+      const sess = await data.get(id);
+      if (sess && typeof sess.slug === "string") {
+        key = id;
+        const ok = await data.delete(key);
+        // 재계산 — 디로드 아니었으면 다음 stash 갱신
+        const next = await computeNextTarget(sess.slug, data).catch(() => null);
+        if (next && typeof (next as any).next_target === "number") {
+          const routine = await data.get(`routine:${sess.slug}`);
+          if (routine) {
+            routine.next_session_goal = {
+              value: (next as any).next_target,
+              computed_at: nowIso(),
+              source: "auto",
+              note: null,
+            };
+            routine.updated_at = nowIso();
+            await data.set(`routine:${sess.slug}`, routine);
+            sideEffect = { recomputed_next_session_goal_for: sess.slug };
+          }
+        } else {
+          // 신호 부족 → stash 자체를 비움 (stale 방지)
+          const routine = await data.get(`routine:${sess.slug}`);
+          if (routine && routine.next_session_goal) {
+            routine.next_session_goal = null;
+            routine.updated_at = nowIso();
+            await data.set(`routine:${sess.slug}`, routine);
+            sideEffect = { cleared_next_session_goal_for: sess.slug };
+          }
+        }
+        return { deleted: ok, kind, id, axis: null, side_effect: sideEffect };
+      }
+      key = id;
+      break;
+    }
+
+    default: throw new Error("kind 는 routine / metric / reminder / fact / split_plan / meal / measure / session / activity 중 하나.");
   }
-  return { deleted: await data.delete(key), kind, id, axis: args.axis ?? null };
+  return { deleted: await data.delete(key), kind, id, axis: args.axis ?? null, side_effect: sideEffect };
 }
 
 async function getState(data: Data) {
@@ -802,14 +868,16 @@ async function getState(data: Data) {
 
   const [metrics, routines, reminders] = await Promise.all([
     Promise.all(metricDefs.map(async (def: any) => {
-      const all = (await data.list(`measure:${def.slug}:`))
-        .map(r => r.value).filter(nonNull)
+      const allRows = await data.list(`measure:${def.slug}:`);
+      const all = allRows
+        .map(r => ({ id: r.key, ...r.value })).filter((m: any) => m && typeof m.value === "number")
         .sort((a: any, b: any) => String(a.measured_at).localeCompare(String(b.measured_at)));
       const latest: any = all.at(-1) ?? null;
       const last7 = all.filter((m: any) => new Date(m.measured_at).getTime() >= sevenDaysAgo);
       const avg7 = last7.length > 0 ? mean(last7.map((m: any) => m.value)) : null;
       return {
         ...def,
+        latest_id: latest?.id ?? null,
         latest_value: latest?.value ?? null,
         latest_measured_at: latest?.measured_at ?? null,
         latest_context: latest?.context ?? null,
@@ -819,8 +887,9 @@ async function getState(data: Data) {
       };
     })),
     Promise.all(routineDefs.map(async (def: any) => {
-      const sessions = (await data.list(`session:${def.slug}:`))
-        .map(r => r.value).filter(nonNull)
+      const sessionRows = await data.list(`session:${def.slug}:`);
+      const sessions = sessionRows
+        .map(r => ({ id: r.key, ...r.value })).filter((s: any) => s && Array.isArray(s.sets))
         .sort((a: any, b: any) => String(a.performed_at).localeCompare(String(b.performed_at)));
       const last: any = sessions.at(-1) ?? null;
       const progression_state = computeProgressionState(def, sessions);
@@ -846,12 +915,12 @@ async function getState(data: Data) {
   ]);
 
   const recent_activities = activitiesRaw
-    .map(r => r.value).filter(nonNull)
+    .map(r => ({ id: r.key, ...r.value })).filter((a: any) => a && typeof a.name === "string")
     .filter((a: any) => new Date(a.performed_at).getTime() >= sevenDaysAgo)
     .sort((a: any, b: any) => String(b.performed_at).localeCompare(String(a.performed_at)));
 
   const meals_today_items = mealsRaw
-    .map(r => r.value).filter(nonNull)
+    .map(r => ({ id: r.key, ...r.value })).filter((m: any) => m && typeof m.name === "string")
     .filter((m: any) => dateInTz(settings.timezone, new Date(m.eaten_at)) === today)
     .sort((a: any, b: any) => String(a.eaten_at).localeCompare(String(b.eaten_at)));
 
@@ -1390,7 +1459,7 @@ function buildDashboardHtml(tab: string, s: any): string {
     content += renderMetricsCard(s.metrics);
     content += renderFactsCard("건강 관련 사실 (알레르기·복용약 등)", s.user_facts.health_metric);
   } else if (tab === "diet") {
-    content += renderDietCard(s.meals_today, s.reminders, s.derived);
+    content += renderDietCard(s.meals_today, s.reminders, s.derived, s.settings);
     content += renderFactsCard("식단 제약·알람 관련", s.user_facts.diet_reminder);
   } else if (tab === "baseline") {
     content += renderBaselineSettingsCard(s.settings, s.derived);
@@ -1422,6 +1491,33 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0
 .due{background:#2a2a4a;color:#93c5fd}
 .empty{color:#666;font-style:italic;padding:4px 0}
 .meta{color:#777;font-size:11px}
+.dim{opacity:.6}
+.tag{display:inline-block;font-size:10px;color:#a0a0a0;background:#1f1f1f;padding:1px 6px;border-radius:3px;margin-left:6px;vertical-align:middle}
+.tag.dim{background:#1a1a1a;color:#666}
+.sub-hdr{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:10px 0 4px;padding-top:8px;border-top:1px solid #1f1f1f}
+.routine{padding:8px 6px;margin:0 -6px;border-bottom:1px solid #1f1f1f}
+.routine:last-child{border-bottom:none}
+.routine-hdr{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:5px}
+.routine-name{color:#d4d4d4;min-width:0}
+.routine-last{color:#fafafa;font-size:11px;font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0}
+.goal-line{font-size:13px;color:#fafafa;padding:5px 8px;background:#1a1530;border-left:2px solid #7c3aed;border-radius:0 4px 4px 0;margin:3px 0}
+.goal-line b{color:#c4b5fd;font-size:14px}
+.goal-line.dim{background:#161616;border-left-color:#333;color:#666}
+.goal-note{font-size:11px;color:#a0a0a0;margin-top:3px}
+.stat-row{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 2px;font-size:11px;color:#888}
+.stat{white-space:nowrap}
+.stat-k{color:#666;margin-right:3px}
+.stat b{color:#d4d4d4}
+.memo{font-size:11px;color:#c0c0c0;background:#181818;padding:5px 8px;border-radius:4px;margin:4px 0 2px;border-left:2px solid #444}
+.kbar{height:6px;background:#1f1f1f;border-radius:3px;overflow:hidden;margin:6px 0 4px;position:relative}
+.kbar-fill{height:100%;background:linear-gradient(90deg,#4ade80 0%,#fbbf24 80%,#f87171 100%);transition:width .2s}
+.kbar-mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:#888;opacity:.7}
+.meal-row{display:flex;gap:10px;padding:6px 4px;border-bottom:1px solid #1f1f1f;align-items:baseline}
+.meal-row:last-child{border-bottom:none}
+.meal-time{color:#666;font-size:11px;font-variant-numeric:tabular-nums;min-width:42px;flex-shrink:0}
+.meal-name{color:#d4d4d4;flex:1;min-width:0;word-break:break-word}
+.meal-kcal{color:#fafafa;font-variant-numeric:tabular-nums;flex-shrink:0;font-size:12px}
+.meal-macro{color:#888;font-size:10px;flex-shrink:0;font-variant-numeric:tabular-nums}
 </style></head><body>
 <div class="hdr">
 <div class="step">${escapeHtml(stepLabels[s.protocol_step] || s.protocol_step)} · ${escapeHtml(s.server_now_local)} (${escapeHtml(s.settings.timezone)})</div>
@@ -1461,6 +1557,22 @@ function renderOverviewCard(s: any): string {
     html += renderTodayBucketCard(s.active_split_plan, s.routines);
   }
 
+  // 오늘 차례 묶음의 루틴들에 stash 된 다음 목표 — overview 에서 하이라이트
+  const todayGoals = collectTodayGoals(s);
+  if (todayGoals.length > 0) {
+    html += `<div class="card"><h3>오늘 운동 다음 목표 (${todayGoals.length})</h3>`;
+    for (const item of todayGoals) {
+      const g = item.goal;
+      const unit = item.unit ? ` ${escapeHtml(String(item.unit))}` : "";
+      const valStr = `${roundForDisplay(g.value)}${unit}`;
+      const srcCls = g.source === "manual" ? "due" : "ok";
+      const srcLabel = g.source === "manual" ? "직접 지정" : "자동";
+      const noteStr = g.note ? ` <span class="meta">· ${escapeHtml(String(g.note))}</span>` : "";
+      html += `<div class="row"><div class="name">${escapeHtml(item.display_name)}</div><div class="val">🎯 <b>${valStr}</b> <span class="badge ${srcCls}">${srcLabel}</span>${noteStr}</div></div>`;
+    }
+    html += `</div>`;
+  }
+
   const critical = s.metrics.filter((m: any) => m.priority === "critical" && m.in_target === false);
   if (critical.length > 0) {
     html += `<div class="card"><h3 style="color:#f87171">⚠ critical 지표 범위 이탈 (${critical.length})</h3>`;
@@ -1475,17 +1587,24 @@ function renderOverviewCard(s: any): string {
   if (t.count === 0) {
     html += '<div class="empty">아직 기록 없음.</div>';
   } else {
-    const line = [
-      t.kcal !== null ? `${t.kcal} kcal` : null,
-      t.protein_g !== null ? `P ${t.protein_g}g` : null,
-      t.carbs_g !== null ? `C ${t.carbs_g}g` : null,
-      t.fat_g !== null ? `F ${t.fat_g}g` : null,
-    ].filter(Boolean).join(" · ");
-    html += `<div class="row"><div class="name">${t.count}끼 합계</div><div class="val">${escapeHtml(line) || '<span class="meta">영양 미입력</span>'}</div></div>`;
     if (s.derived?.maintenance_kcal !== null && t.kcal !== null) {
       const delta = t.kcal - s.derived.maintenance_kcal;
       const sign = delta >= 0 ? "+" : "";
-      html += `<div class="row"><div class="name">Maintenance 대비</div><div class="val">${sign}${delta} kcal</div></div>`;
+      const deltaCls = Math.abs(delta) < 200 ? "ok" : (delta > 0 ? "warn" : "due");
+      html += `<div class="row"><div class="name">${t.count}끼 합계</div><div class="val"><b>${t.kcal}</b> / ${s.derived.maintenance_kcal} kcal <span class="badge ${deltaCls}">${sign}${delta}</span></div></div>`;
+      html += renderMaintenanceBar(t.kcal, s.derived.maintenance_kcal);
+    } else if (t.kcal !== null) {
+      html += `<div class="row"><div class="name">${t.count}끼 합계</div><div class="val"><b>${t.kcal} kcal</b></div></div>`;
+    } else {
+      html += `<div class="row"><div class="name">${t.count}끼 기록</div><div class="val"><span class="meta">칼로리 미입력</span></div></div>`;
+    }
+    const macroParts = [
+      t.protein_g !== null ? `<span class="stat"><span class="stat-k">P</span> <b>${t.protein_g}g</b></span>` : null,
+      t.carbs_g !== null ? `<span class="stat"><span class="stat-k">C</span> <b>${t.carbs_g}g</b></span>` : null,
+      t.fat_g !== null ? `<span class="stat"><span class="stat-k">F</span> <b>${t.fat_g}g</b></span>` : null,
+    ].filter(Boolean);
+    if (macroParts.length > 0) {
+      html += `<div class="stat-row">${macroParts.join("")}</div>`;
     }
   }
   html += "</div>";
@@ -1507,6 +1626,35 @@ function renderOverviewCard(s: any): string {
     html += "</div>";
   }
   return html;
+}
+
+function collectTodayGoals(s: any): Array<{ display_name: string; unit: string | null; goal: any }> {
+  // 활성 분할의 오늘/다음 묶음 routine_slugs 우선, 없으면 전체 routine 의 stash 된 goal
+  const plan = s.active_split_plan;
+  let slugs: string[] | null = null;
+  if (plan?.today_bucket?.routine_slugs?.length > 0) {
+    slugs = plan.today_bucket.routine_slugs;
+  } else if (plan?.next_bucket_hint?.routine_slugs?.length > 0) {
+    slugs = plan.next_bucket_hint.routine_slugs;
+  }
+  const list: Array<{ display_name: string; unit: string | null; goal: any }> = [];
+  if (slugs) {
+    for (const slug of slugs) {
+      const r = s.routines.find((x: any) => x?.slug === slug);
+      if (r?.next_session_goal && typeof r.next_session_goal.value === "number") {
+        list.push({ display_name: r.display_name, unit: r.unit ?? null, goal: r.next_session_goal });
+      }
+    }
+  } else {
+    // 분할 없으면 — stash 된 모든 루틴 (최대 5개)
+    for (const r of s.routines) {
+      if (r?.next_session_goal && typeof r.next_session_goal.value === "number") {
+        list.push({ display_name: r.display_name, unit: r.unit ?? null, goal: r.next_session_goal });
+        if (list.length >= 5) break;
+      }
+    }
+  }
+  return list;
 }
 
 function formatRoutineOrder(routine_slugs: any[], routines: any[]): string {
@@ -1678,6 +1826,72 @@ function formatLastSessionSummary(last: any): string {
   return `${total}세트 · ${date}${supersetBadge}`;
 }
 
+function progressionLabel(progression: string): string {
+  switch (progression) {
+    case "weight": return "무게 ↑";
+    case "time": return "시간 ↓";
+    case "distance": return "거리 ↑";
+    case "reps": return "횟수 ↑";
+    case "hold": return "유지 ↑";
+    default: return progression;
+  }
+}
+
+function renderRoutineBlock(r: any): string {
+  const planStr = formatRoutinePlan(r);
+  const planTag = planStr ? `<span class="tag">${escapeHtml(planStr)}</span>` : "";
+  const progTag = r.progression ? `<span class="tag dim">${escapeHtml(progressionLabel(r.progression))}</span>` : "";
+  const summary = formatLastSessionSummary(r.last_session);
+
+  // 다음 목표 — 가장 큰 라인
+  const g = r.next_session_goal;
+  let goalBlock = "";
+  if (g && typeof g.value === "number") {
+    const unit = r.unit ? ` ${escapeHtml(String(r.unit))}` : "";
+    const valStr = `${roundForDisplay(g.value)}${unit}`;
+    const srcBadge = g.source === "manual"
+      ? `<span class="badge due" style="margin-left:6px">직접 지정</span>`
+      : `<span class="badge ok" style="margin-left:6px">자동</span>`;
+    const noteStr = g.note ? `<div class="goal-note">📝 ${escapeHtml(String(g.note))}</div>` : "";
+    goalBlock = `<div class="goal-line">🎯 다음 목표 <b>${valStr}</b>${srcBadge}${noteStr}</div>`;
+  } else {
+    goalBlock = `<div class="goal-line dim">🎯 다음 목표 <span class="meta">세션 기록 시 자동 계산</span></div>`;
+  }
+
+  // 능력치 라인 — 현재 / 직전 / 최고
+  const ps = r.progression_state ?? {};
+  const unit = r.unit ? ` ${escapeHtml(String(r.unit))}` : "";
+  const fmt = (v: number | null | undefined) => (typeof v === "number") ? `${roundForDisplay(v)}${unit}` : null;
+  const wv = fmt(ps.working_value);
+  const cur = fmt(ps.current_value);
+  const pr = fmt(ps.pr_value);
+  const stateParts: string[] = [];
+  if (wv) stateParts.push(`<span class="stat"><span class="stat-k">현재</span> <b>${wv}</b></span>`);
+  if (cur) {
+    const sameAsWv = wv && ps.current_value === ps.working_value;
+    if (!sameAsWv) stateParts.push(`<span class="stat"><span class="stat-k">직전</span> ${cur}</span>`);
+  }
+  if (pr) stateParts.push(`<span class="stat"><span class="stat-k">최고</span> ${pr}</span>`);
+  const stateLine = stateParts.length > 0
+    ? `<div class="stat-row">${stateParts.join("")}</div>`
+    : "";
+
+  // 메모 — 콜아웃
+  const memoBlock = r.memo
+    ? `<div class="memo">📝 ${escapeHtml(r.memo)}</div>`
+    : "";
+
+  return `<div class="routine">
+<div class="routine-hdr">
+<div class="routine-name">${escapeHtml(r.display_name)} ${planTag}${progTag}</div>
+<div class="routine-last">${summary}</div>
+</div>
+${goalBlock}
+${stateLine}
+${memoBlock}
+</div>`;
+}
+
 function renderExerciseCard(routines: any[], activities: any[]): string {
   let html = '<div class="card"><h3>운동 루틴</h3>';
   if (routines.length === 0 && activities.length === 0) {
@@ -1685,55 +1899,76 @@ function renderExerciseCard(routines: any[], activities: any[]): string {
     return html;
   }
   for (const r of routines) {
-    const progBadge = r.progression ? `<span class="meta">(${escapeHtml(r.progression)})</span>` : "";
-    const planStr = formatRoutinePlan(r);
-    const planHtml = planStr ? ` <span class="meta">· ${escapeHtml(planStr)}</span>` : "";
-    const summary = formatLastSessionSummary(r.last_session);
-    html += `<div class="row"><div class="name">${escapeHtml(r.display_name)} ${progBadge}${planHtml}</div><div class="val">${summary}</div></div>`;
-    const stateLine = formatProgressionState(r);
-    if (stateLine) {
-      html += `<div class="meta" style="margin-left:4px;margin-bottom:4px">${stateLine}</div>`;
-    }
-    const goalLine = formatNextSessionGoal(r);
-    if (goalLine) {
-      html += `<div class="meta" style="margin-left:4px;margin-bottom:4px">🎯 ${goalLine}</div>`;
-    }
-    if (r.memo) {
-      html += `<div class="meta" style="margin-left:4px;margin-bottom:6px">📝 ${escapeHtml(r.memo)}</div>`;
-    }
+    html += renderRoutineBlock(r);
   }
   if (activities.length > 0) {
-    html += `<div class="meta" style="margin:8px 0 4px">최근 7일 활동 ${activities.length}건</div>`;
+    html += `<div class="sub-hdr">최근 7일 자유 활동 ${activities.length}건</div>`;
     for (const a of activities.slice(0, 5)) {
-      html += `<div class="row"><div class="name">${escapeHtml(a.name)} <span class="meta">(${a.intensity})</span></div><div class="val">${a.duration_minutes}분</div></div>`;
+      html += `<div class="row"><div class="name">${escapeHtml(a.name)} <span class="meta">(${escapeHtml(a.intensity)})</span></div><div class="val">${a.duration_minutes}분</div></div>`;
     }
   }
   html += "</div>";
   return html;
 }
 
-function renderDietCard(mealsToday: any, reminders: any[], derived: any): string {
+function formatHmFromIso(iso: string, tz: string): string {
+  try {
+    return hhmmInTz(tz, new Date(iso));
+  } catch {
+    return String(iso).slice(11, 16);
+  }
+}
+
+function renderMaintenanceBar(consumed: number, maintenance: number): string {
+  // 0~1.2 비율 막대. 1.0 위치에 maintenance 마크.
+  const ratio = Math.max(0, Math.min(1.2, consumed / maintenance));
+  const widthPct = (ratio / 1.2) * 100;
+  const markPct = (1.0 / 1.2) * 100;
+  return `<div class="kbar"><div class="kbar-fill" style="width:${widthPct.toFixed(1)}%"></div><div class="kbar-mark" style="left:${markPct.toFixed(1)}%"></div></div>`;
+}
+
+function renderDietCard(mealsToday: any, reminders: any[], derived: any, settings: any): string {
   let html = `<div class="card"><h3>오늘 식단 · ${escapeHtml(mealsToday.date)}</h3>`;
   if (mealsToday.items.length === 0) {
     html += '<div class="empty">오늘 기록된 끼 없음.</div>';
   } else {
     const t = mealsToday.totals;
-    const totalLine = [
-      t.kcal !== null ? `${t.kcal} kcal` : null,
-      t.protein_g !== null ? `P ${t.protein_g}g` : null,
-      t.carbs_g !== null ? `C ${t.carbs_g}g` : null,
-      t.fat_g !== null ? `F ${t.fat_g}g` : null,
-    ].filter(Boolean).join(" · ");
-    html += `<div class="row"><div class="name">합계 (${t.count}끼)</div><div class="val">${escapeHtml(totalLine) || '<span class="meta">영양 미입력</span>'}</div></div>`;
+
+    // 칼로리 + 유지 칼로리 비교 — 가장 위
     if (derived?.maintenance_kcal !== null && t.kcal !== null) {
       const delta = t.kcal - derived.maintenance_kcal;
       const sign = delta >= 0 ? "+" : "";
-      const cls = Math.abs(delta) < 200 ? "ok" : "warn";
-      html += `<div class="row"><div class="name">Maintenance 대비 <span class="badge ${cls}">${sign}${delta}</span></div><div class="val">${derived.maintenance_kcal} kcal</div></div>`;
+      const deltaCls = Math.abs(delta) < 200 ? "ok" : (delta > 0 ? "warn" : "due");
+      html += `<div class="row"><div class="name">오늘 섭취</div><div class="val"><b>${t.kcal}</b> / ${derived.maintenance_kcal} kcal <span class="badge ${deltaCls}">${sign}${delta}</span></div></div>`;
+      html += renderMaintenanceBar(t.kcal, derived.maintenance_kcal);
+    } else if (t.kcal !== null) {
+      html += `<div class="row"><div class="name">오늘 섭취</div><div class="val"><b>${t.kcal} kcal</b> <span class="meta">(maintenance 미설정)</span></div></div>`;
+    } else {
+      html += `<div class="row"><div class="name">${t.count}끼 기록</div><div class="val"><span class="meta">칼로리 미입력</span></div></div>`;
     }
-    for (const m of mealsToday.items.slice(-3)) {
-      const v = m.kcal !== null ? `${m.kcal} kcal` : '<span class="meta">—</span>';
-      html += `<div class="row"><div class="name">${escapeHtml(m.name)}</div><div class="val">${v}</div></div>`;
+
+    // 매크로 합계
+    const macroParts = [
+      t.protein_g !== null ? `<span class="stat"><span class="stat-k">P</span> <b>${t.protein_g}g</b></span>` : null,
+      t.carbs_g !== null ? `<span class="stat"><span class="stat-k">C</span> <b>${t.carbs_g}g</b></span>` : null,
+      t.fat_g !== null ? `<span class="stat"><span class="stat-k">F</span> <b>${t.fat_g}g</b></span>` : null,
+    ].filter(Boolean);
+    if (macroParts.length > 0) {
+      html += `<div class="stat-row">${macroParts.join("")}</div>`;
+    }
+
+    // 끼 목록 — 시간순 (전체)
+    html += `<div class="sub-hdr">끼니 ${t.count}건</div>`;
+    for (const m of mealsToday.items) {
+      const hm = escapeHtml(formatHmFromIso(m.eaten_at, settings.timezone));
+      const kcalStr = m.kcal !== null ? `${m.kcal} kcal` : '<span class="meta">—</span>';
+      const macroStr = [
+        m.protein_g !== null ? `P${m.protein_g}` : null,
+        m.carbs_g !== null ? `C${m.carbs_g}` : null,
+        m.fat_g !== null ? `F${m.fat_g}` : null,
+      ].filter(Boolean).join("/");
+      const macroHtml = macroStr ? ` <span class="meal-macro">${escapeHtml(macroStr)}</span>` : "";
+      html += `<div class="meal-row"><div class="meal-time">${hm}</div><div class="meal-name">${escapeHtml(m.name)}</div><div class="meal-kcal">${kcalStr}</div>${macroHtml}</div>`;
     }
   }
   html += "</div>";
@@ -1743,13 +1978,14 @@ function renderDietCard(mealsToday: any, reminders: any[], derived: any): string
     html += '<div class="empty">등록된 알람 없음.</div>';
   } else {
     for (const r of reminders) {
+      const kindKr = r.kind === "supplement" ? "영양제" : r.kind === "measurement" ? "측정" : "행동";
       const slotsHtml = r.today_status.map((sl: any) => {
         const cls = sl.status === "acked" ? "ok"
           : sl.status === "due" ? "due"
-          : sl.status === "missed" ? "warn" : "";
+          : sl.status === "missed" ? "warn" : "dim";
         return `<span class="badge ${cls}">${sl.slot}</span>`;
       }).join(" ");
-      html += `<div class="row"><div class="name">${escapeHtml(r.label)} <span class="meta">(${r.kind})</span></div><div class="val">${slotsHtml}</div></div>`;
+      html += `<div class="row"><div class="name">${escapeHtml(r.label)} <span class="tag dim">${kindKr}</span></div><div class="val">${slotsHtml}</div></div>`;
     }
   }
   html += "</div>";

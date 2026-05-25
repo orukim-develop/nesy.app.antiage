@@ -210,8 +210,10 @@ tools:
 
   - name: log_meal
     description: |
-      끼 한 건을 기록한다. name 만 필수, 영양 필드(kcal/protein_g/carbs_g/fat_g)는 모두 선택 — AI 가 사용자 발화에서 추정/보조.
-      반환에 오늘(settings.timezone 기준) 끼 합계 포함.
+      끼 한 건을 기록하거나 수정한다 (upsert). name 만 필수, 영양 필드(kcal/protein_g/carbs_g/fat_g)는 모두 선택 — AI 가 사용자 발화에서 추정/보조.
+      신규 등록: id 생략 — 코드가 새 key 생성.
+      수정: id 에 기존 끼니의 전체 key ('meal:...' 형식) 전달 — get_state.meals_today.items[].id 에서 가져옴. 같은 key 덮어쓰기.
+      반환 { saved, id, today_totals, maintenance }. id 는 저장된 전체 key — 사용자에게 노출 금지, AI 내부 추적용.
       activity_factor>0 이고 BMR 자동 계산 조건(height_cm>0, sex≠unspecified, birth_year>0, body_weight_kg 측정 1건 이상)을 모두 충족하면 maintenance 비교(today_delta_kcal)도 포함.
     inputSchema:
       type: object
@@ -230,6 +232,9 @@ tools:
         eaten_at:
           type: string
           description: "ISO 8601 시각. 생략하면 호출 시점."
+        id:
+          type: string
+          description: "선택. 수정 모드 — 기존 끼니의 전체 key ('meal:...' 형식). get_state.meals_today.items[].id 에서 가져옴. 생략하면 새 끼니 등록."
       required: [name]
 
   - name: define_reminder
@@ -429,18 +434,29 @@ tools:
 
   - name: delete_entity
     description: |
-      등록된 entity 를 삭제한다. routine / metric / reminder / fact / split_plan 통합 삭제.
-      사용자가 명시적으로 "지워줘" 라고 한 경우에만 호출.
-      과거 기록(세션/측정/식단/ack)은 남는다.
+      등록된 entity 또는 과거 기록 한 건을 삭제한다. 사용자가 명시적으로 "지워줘" / "잘못 입력했어" 라고 한 경우에만 호출.
+
+      두 부류:
+        정의(definition) — routine / metric / reminder / fact / split_plan: id 는 slug (또는 reminder id). 정의 자체만 삭제, 과거 기록은 남음.
+        기록(record) — meal / measure / session / activity: id 는 전체 storage key (prefix 포함). get_state 에서 가져옴:
+          meal → meals_today.items[].id ('meal:...')
+          measure → metrics[].latest_id ('measure:slug:...')
+          session → routines[].last_session.id ('session:slug:...')
+          activity → recent_activities[].id ('activity:...')
+
+      session 삭제 시 부수 효과: 해당 routine 의 next_session_goal 이 자동으로 재계산되어 stale stash 방지 (응답에 side_effect.recomputed_next_session_goal_for 또는 cleared_next_session_goal_for 포함). 메모리 오염 방지.
+
+      끼니(meal) 의 단순 수정(name/kcal/macro 등 값만 변경)은 delete 대신 log_meal({id:..., ...새 값}) upsert 사용 — 단순. delete 는 진짜로 없애야 할 때만.
+      id 는 사용자에게 절대 노출 금지 — AI 가 내부에서 get_state 조회 후 사용.
     inputSchema:
       type: object
       properties:
         kind:
           type: string
-          description: "routine / metric / reminder / fact / split_plan 중 하나."
+          description: "routine / metric / reminder / fact / split_plan / meal / measure / session / activity 중 하나."
         id:
           type: string
-          description: "삭제 대상 식별자. routine/metric/fact/split_plan 은 slug, reminder 는 reminder id."
+          description: "정의는 slug (reminder 는 reminder id). 기록은 'meal:...' / 'measure:slug:...' / 'session:slug:...' / 'activity:...' 형식의 전체 storage key — get_state 에서 가져옴."
         axis:
           type: string
           description: "kind=fact 일 때만 필수. exercise / health_metric / diet_reminder / baseline 중 하나."
@@ -457,10 +473,10 @@ tools:
         - settings: { timezone, activity_factor, height_cm, sex, birth_year }
         - server_now / server_now_local: 추측 금지용 서버 기준 시각
         - derived: { age, bmr, bmr_source, maintenance_kcal } — settings + 최근 body_weight_kg 로 자동 계산 (조건 불충족 필드는 null)
-        - metrics: 등록 지표들 + 각각의 최근 측정값 + target 평가 + 7일 평균 + 샘플 수
-        - routines: 등록 루틴들 + 각각의 progression + 최근 세션 + progression_state ({ working_value, current_value, current_at, pr_value, pr_at, baseline_value, baseline_at, direction }) + memo + next_session_goal ({ value, computed_at, source: 'auto'|'manual', note })
-        - recent_activities: 최근 7일 비루틴 활동
-        - meals_today: 오늘(timezone 기준) 끼 합계 + 항목
+        - metrics: 등록 지표들 + 각각의 최근 측정값(latest_id 포함) + target 평가 + 7일 평균 + 샘플 수
+        - routines: 등록 루틴들 + 각각의 progression + 최근 세션(last_session.id 포함) + progression_state ({ working_value, current_value, current_at, pr_value, pr_at, baseline_value, baseline_at, direction }) + memo + next_session_goal ({ value, computed_at, source: 'auto'|'manual', note })
+        - recent_activities: 최근 7일 비루틴 활동 (각 항목에 id 포함 — delete_entity 용)
+        - meals_today: 오늘(timezone 기준) 끼 합계 + 항목 (items[].id — log_meal upsert / delete_entity 용)
         - reminders: 등록 알람들 + 오늘 슬롯별 상태(future/due/acked/missed)
         - user_facts: { exercise, health_metric, diet_reminder, baseline } — 축별 fact 묶음
         - split_plans: 등록된 모든 분할 계획 목록

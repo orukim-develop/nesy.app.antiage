@@ -130,9 +130,49 @@ next_session_goal: {    // null 또는
 
 디로드 세션·워밍업 세트는 모두 제외. AI 가 진행 상황·정체·후퇴를 한눈에 판단 가능.
 
+## 기록 수정·삭제
+
+마도서는 두 가지 식별자 체계:
+
+| 부류 | id 형식 | 예 |
+|---|---|---|
+| **정의(definition)** | slug (snake_case) | `squat` / `body_weight_kg` / `morning_glucose` |
+| **기록(record)** | 전체 storage key (prefix 포함) | `meal:2026-05-25T08:30:00.000Z:k4j2a9x1` / `session:squat:2026-05-25T18:00:00.000Z:p3l9m2q5` |
+
+기록 id 는 `get_state` 에서 자동 surface:
+
+| 항목 | id 위치 |
+|---|---|
+| 끼니 | `meals_today.items[].id` |
+| 최근 측정 | `metrics[].latest_id` |
+| 최근 세션 | `routines[].last_session.id` |
+| 최근 활동 | `recent_activities[].id` |
+
+### 끼니 수정 — `log_meal` upsert
+
+```
+log_meal({ id: "meal:...", name: "점심 (수정)", kcal: 700, ... })
+```
+
+`id` 를 함께 넘기면 같은 key 덮어쓰기 (값만 변경). 신규는 `id` 생략.
+
+### 기타 기록 수정·삭제 — `delete_entity`
+
+`measure` / `session` / `activity` 는 별도 update 도구 없음 — `delete_entity({kind, id})` 후 다시 `log_*` 호출.
+
+```
+delete_entity({ kind: "session", id: "session:squat:..." })
+```
+
+**세션 삭제의 부수 효과**: 해당 routine 의 `next_session_goal` 이 자동 재계산(또는 신호 부족 시 클리어)되어 stale stash 방지. 응답에 `side_effect: { recomputed_next_session_goal_for | cleared_next_session_goal_for }` 포함.
+
+**AI 가 사용자에게 id 노출 금지** — 자연어로만. 예 "아까 등록한 점심(450kcal) 을 600kcal 로 수정할게요" / "오늘 운동 세션 한 건 지울게요".
+
 ## 마이그레이션
 
 새 필드(`next_session_goal`) 추가는 **마이그레이션 불필요** — 기존 routine 은 `null` 로 유지되고, 다음 `log_routine_session` 호출 순간 자동 stash 됨. AI 룰이 "null 이면 `next_target` 재호출" 명시하니 호환됨.
+
+기록 id 노출(`meals_today.items[].id` 등) 도 마이그레이션 불필요 — `get_state` 가 storage key 를 그대로 surface, 추가 저장 없음.
 
 ### 계획 세트·횟수 (target_sets / target_reps / 범위)
 
@@ -216,6 +256,6 @@ next_session_goal: {    // null 또는
 
 ## 도구 16개
 
-`set_goal` · `define_routine_exercise` · `log_routine_session` · `log_activity` · `define_metric` · `record_metric` · `log_meal` · `define_reminder` · `ack_reminder` · `define_user_fact` · `define_split_plan` · `update_routine_state` (routine 비-구조 필드 patch — working_value · memo · default_increment · target_* 등) · `delete_entity` (routine/metric/reminder/fact/split_plan 통합) · `get_state` · `next_target` · `suggest_setup`
+`set_goal` · `define_routine_exercise` · `log_routine_session` · `log_activity` · `define_metric` · `record_metric` · `log_meal` (신규 또는 `id` 로 upsert) · `define_reminder` · `ack_reminder` · `define_user_fact` · `define_split_plan` · `update_routine_state` (routine 비-구조 필드 patch — working_value · memo · default_increment · target_* 등) · `delete_entity` (정의 5종 + 기록 4종 통합 — routine/metric/reminder/fact/split_plan + meal/measure/session/activity) · `get_state` · `next_target` · `suggest_setup`
 
 알람 푸시(`check_reminders`)와 위젯(`render_dashboard`)은 도구 매니페스트 외 자동 호출.
