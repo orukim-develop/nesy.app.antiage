@@ -42,6 +42,66 @@
 
 **표준 인체 가정 금지** — 다리/팔이 없거나 의수·의족 사용자도 본인이 할 수 있는 형태(예 "기어가기", "한팔 푸시업")를 progression 에 맞게 등록 가능.
 
+## working_value — "공식" 현재 능력치
+
+각 루틴은 사용자가 정상적으로 다루는 운동값(`working_value`) 을 저장한다. `next_target` 계산의 **base** — 다음 추천값은 `working_value + (RPE 기반 delta)`. 없으면 직전 본세트 평균이 fallback.
+
+**코드는 자동 갱신 X.** 매 세션 후 `next_target.working_value_recommendation` 이 다음을 알려줌:
+
+```
+{
+  current_working_value: 100,
+  last_session_avg: 95,
+  diff: -5,
+  suggested_new_value: 95,
+  recommend_update: true,
+  reason: "직전 본세트 평균이 working_value 보다 낮음 — 능력치 하향 조정 검토 권장."
+}
+```
+
+`recommend_update=true` 면 AI 가 사용자 발화 언어로 권유 → 합의 시 `update_routine_state(slug, working_value=…)` 호출. 임계값은 `|diff| ≥ default_increment × 0.5`.
+
+워크플로우:
+
+```
+log_routine_session → next_target 호출 → working_value_recommendation 확인
+                                      ↓ recommend_update=true
+                                      AI 가 "현재 능력치를 95kg 으로 갱신할까요?" 권유
+                                      ↓ 사용자 합의
+                                      update_routine_state(slug, working_value=95)
+```
+
+## memo — AI 가 읽는 자유 메모
+
+각 루틴에 1000자 이내 메모. **코드는 파싱 안 함 — AI 가 해석하고 행동에 반영.** 예:
+
+| 메모 | AI 의 반응 |
+|---|---|
+| "이 머신 무게 단위 7kg (5kg 단위 아님)" | `next_target` 그대로 쓰지 않고 7 배수로 라운드 + `default_increment=7` 도 같이 `update_routine_state` |
+| "어깨 부상 회복 중 — 더 증량 X" | RPE 낮아도 증량 추천 보류, 유지 권장 |
+| "8월까지 디로드 위주" | `is_deload=true` 로 기록 권장 |
+
+메모와 `next_target` 추천이 충돌하면 **메모 우선**.
+
+## progression_state — get_state 에서 자동 노출
+
+`get_state.routines[]` 각 항목에 다음이 포함됨:
+
+```
+progression_state: {
+  working_value,        // 등록된 능력치 (없으면 null)
+  current_value,        // 직전 비-디로드 세션 본세트 평균
+  current_at,
+  pr_value,             // 모든 본세트 단일값 중 최댓값 (time 은 최솟값)
+  pr_at,
+  baseline_value,       // 첫 비-디로드 세션 본세트 평균
+  baseline_at,
+  direction,            // "increase" | "decrease"
+}
+```
+
+디로드 세션·워밍업 세트는 모두 제외. AI 가 진행 상황·정체·후퇴를 한눈에 판단 가능.
+
 ### 계획 세트·횟수 (target_sets / target_reps / 범위)
 
 `define_routine_exercise` 는 계획된 구조도 같이 저장:
@@ -122,8 +182,8 @@
 
 `height_cm > 0` + `sex ≠ unspecified` + `birth_year > 0` + `body_weight_kg` 측정 1건 이상이 모두 만족되면, Mifflin-St Jeor 공식으로 **기초대사량(BMR) 이 자동 계산**되어 `get_state.derived` 에 포함된다 (`bmr` metric 별도 등록 불필요). 여기에 `activity_factor > 0` 까지 더해지면 `log_meal` 응답에 maintenance 비교(today_delta_kcal)도 자동 활성.
 
-## 도구 15개
+## 도구 16개
 
-`set_goal` · `define_routine_exercise` · `log_routine_session` · `log_activity` · `define_metric` · `record_metric` · `log_meal` · `define_reminder` · `ack_reminder` · `define_user_fact` · `define_split_plan` · `delete_entity` (routine/metric/reminder/fact/split_plan 통합) · `get_state` · `next_target` · `suggest_setup`
+`set_goal` · `define_routine_exercise` · `log_routine_session` · `log_activity` · `define_metric` · `record_metric` · `log_meal` · `define_reminder` · `ack_reminder` · `define_user_fact` · `define_split_plan` · `update_routine_state` (routine 비-구조 필드 patch — working_value · memo · default_increment · target_* 등) · `delete_entity` (routine/metric/reminder/fact/split_plan 통합) · `get_state` · `next_target` · `suggest_setup`
 
 알람 푸시(`check_reminders`)와 위젯(`render_dashboard`)은 도구 매니페스트 외 자동 호출.

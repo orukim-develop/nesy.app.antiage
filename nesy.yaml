@@ -35,6 +35,9 @@ tools:
         target_reps — 계획 고정 횟수 (예 5x5 의 5). progression=weight 또는 reps 에 자연스럽지만 다른 progression 에도 허용.
         target_reps_min / target_reps_max — 계획 횟수 범위 (예 8~12). target_reps 가 같이 들어오면 무시(고정값 우선).
         모두 선택값 — 축구·테니스·등산 등도 사용자가 루틴 추적 원하면 등록 가능 (progression=time 또는 distance 자연스러움). 비-rep 진척에서는 target_reps 미설정 자연스러움.
+
+      working_value — '공식' 현재 능력치. next_target 의 base. 등록 시 초기값 선택 가능. 이후 update_routine_state 로만 갱신. 코드는 자동 갱신 X — 매 세션 후 next_target.working_value_recommendation 보고 AI 가 사용자에게 권유.
+      memo — AI 가 매 계획 시 읽고 반영하는 자유 메모. 예 '이 머신 무게 단위 7kg' (→ default_increment 도 같이 7), '어깨 부상 회복 중 — 더 증량 X' (→ RPE 낮아도 증량 보류), '8월까지 디로드 위주'. 메모 우선.
     inputSchema:
       type: object
       properties:
@@ -74,6 +77,12 @@ tools:
         target_reps_max:
           type: integer
           description: "선택. 계획 횟수 범위 상한 (target_reps_min 이상)."
+        working_value:
+          type: number
+          description: "선택. 사용자가 정상적으로 다루는 운동값 (스쿼트 100kg, 5km 25분 같은 '공식' 현재 능력치). 등록 시 초기 설정 가능. 이후 update_routine_state 로 갱신. next_target 계산의 base 가 됨 — 없으면 직전 본세트 평균이 fallback."
+        memo:
+          type: string
+          description: "선택. AI 가 매 운동 계획 시 읽고 반영하는 자유 메모 (0~1000자). 예 '이 머신 무게 단위 7kg', '어깨 부상 회복 중 — 더 증량 X', '8월까지 디로드 위주'. 코드는 파싱 안 함 — AI 가 해석해 행동에 반영."
       required: [slug, display_name, progression, unit]
 
   - name: log_routine_session
@@ -357,6 +366,52 @@ tools:
           description: "선택. true 면 이 plan 활성화 + 기존 활성 plan 자동 비활성. 생략 시 false."
       required: [slug, name, buckets, assignment]
 
+  - name: update_routine_state
+    description: |
+      등록된 routine 의 비-구조 필드(추적 상태·계획·메모)를 부분 업데이트한다 (patch).
+      같은 slug 의 routine 이 이미 있어야 함. 제공된 필드만 덮어쓰고, 생략한 필드는 그대로 유지.
+      필드를 명시적으로 클리어하려면 null 로 명시 (예 working_value: null 로 워킹밸류 리셋, memo: null 또는 "" 로 메모 삭제).
+
+      working_value — 사용자가 정상적으로 다루는 운동값. 매 세션 후 next_target.working_value_recommendation 보고 직전 본세트 평균과 다르면 AI 가 사용자에게 업데이트 권유 → 합의 시 호출.
+      memo — AI 가 매 계획 시 읽고 반영하는 자유 메모 (0~1000자). 예 '이 머신 무게 단위 7kg' → AI 가 default_increment 도 같이 7 로 업데이트 / '더 증량 X' → AI 가 push_multiplier 무시하고 유지 권장.
+      default_increment / default_rpe_target / weekly_cap / target_sets / target_reps / target_reps_min / target_reps_max — 계획 조정.
+
+      구조 변경 (progression / unit / category) 이 필요하면 define_routine_exercise 재호출 — 그 경우 working_value/memo 도 같이 다시 명시해야 보존됨.
+    inputSchema:
+      type: object
+      properties:
+        slug:
+          type: string
+          description: 업데이트할 routine 의 slug.
+        working_value:
+          type: number
+          description: "선택. 워킹밸류 새 값 (0 이상). null 로 명시하면 클리어."
+        memo:
+          type: string
+          description: "선택. 메모 새 값 (0~1000자). null 또는 빈 문자열로 클리어."
+        default_increment:
+          type: number
+          description: "선택. 다음 추천 증감 단위 (0 초과). null 로 명시하면 progression 기본값으로 되돌림."
+        default_rpe_target:
+          type: number
+          description: "선택. '힘들었음 점수' 목표 (1~10)."
+        weekly_cap:
+          type: number
+          description: "선택. 주당 진척 누계 상한. null 로 명시하면 해제."
+        target_sets:
+          type: integer
+          description: "선택. 계획 세트수 (1 이상)."
+        target_reps:
+          type: integer
+          description: "선택. 계획 고정 횟수 (1 이상). null 로 명시하면 클리어 (그러면 min/max 가능)."
+        target_reps_min:
+          type: integer
+          description: "선택. 계획 횟수 범위 하한. null 로 명시하면 클리어 (max 도 같이)."
+        target_reps_max:
+          type: integer
+          description: "선택. 계획 횟수 범위 상한."
+      required: [slug]
+
   - name: delete_entity
     description: |
       등록된 entity 를 삭제한다. routine / metric / reminder / fact / split_plan 통합 삭제.
@@ -388,7 +443,7 @@ tools:
         - server_now / server_now_local: 추측 금지용 서버 기준 시각
         - derived: { age, bmr, bmr_source, maintenance_kcal } — settings + 최근 body_weight_kg 로 자동 계산 (조건 불충족 필드는 null)
         - metrics: 등록 지표들 + 각각의 최근 측정값 + target 평가 + 7일 평균 + 샘플 수
-        - routines: 등록 루틴들 + 각각의 progression + 최근 세션
+        - routines: 등록 루틴들 + 각각의 progression + 최근 세션 + progression_state ({ working_value, current_value, current_at, pr_value, pr_at, baseline_value, baseline_at, direction }) + memo
         - recent_activities: 최근 7일 비루틴 활동
         - meals_today: 오늘(timezone 기준) 끼 합계 + 항목
         - reminders: 등록 알람들 + 오늘 슬롯별 상태(future/due/acked/missed)
@@ -400,12 +455,14 @@ tools:
   - name: next_target
     description: |
       특정 루틴 운동의 다음 세션 추천값을 계산해서 반환한다 — progression 축에 맞게.
+      base 는 routine.working_value (등록된 능력치) 가 있으면 그 값, 없으면 직전 비-디로드 세션의 본세트 평균.
       직전 세션의 평균 RPE('힘들었음 점수') 와 default_rpe_target 비교 → progression+category 기준 단위로 증감.
       기본 increment: weight+compound 2.5 / weight+isolation 1.25 / time 30 / distance 100 / reps 1 / hold 5. routine.default_increment 로 덮어쓸 수 있음.
       weight+compound: fact:exercise:min_plate_increment_kg (value.v) 가 있으면 그 값으로 대체.
       progression=time 은 방향 반전(낮을수록 좋음) — 쉽다면 더 빠른 목표.
       weekly_cap 가 설정되어 있으면 최근 7일 진척 누계가 cap 을 넘지 않도록 보호.
-      세션 기록이 없으면 next_target=null + reason 반환.
+      반환에 working_value_recommendation 포함 — { current_working_value, last_session_avg, diff, suggested_new_value, recommend_update, reason }. recommend_update=true 면 AI 가 사용자에게 working_value 갱신 권유 후 update_routine_state 호출. 자동 갱신 X.
+      세션 기록이 없으면서 working_value 도 없으면 next_target=null + reason 반환. working_value 만 있으면 그 값을 시작점으로 제안.
     inputSchema:
       type: object
       properties:

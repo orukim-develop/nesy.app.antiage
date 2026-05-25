@@ -31,6 +31,8 @@ const AI_RULES = [
   "진척 추적 대상 vs 자유 활동 분류 모호하면 사용자 발화 언어로 직접 질문 (한국어 예 '이거 진척 추적할까요, 아니면 그냥 활동 기록만 할까요?', 영어 예 'Track this as progression, or just log it as an activity?'). 축구·테니스·등산 같은 스포츠는 보통 log_activity 가 자연스럽지만, 사용자가 '시간 늘리기' / '거리 늘리기' 같은 축으로 진척 추적 원하면 적절한 progression 으로 루틴 등록도 가능 — 사용자 의도 확인 후.",
   "RPE 는 1~10 (높을수록 힘듦) — 사용자에게는 RPE 용어 노출 금지, 사용자 언어로 풀어 묻기 (한국어 '힘들었음 점수', 영어 'how hard it felt (1-10)').",
   "세션 기록 시 progression 추론과 분리되는 3가지 케이스 자동 인지 — (a) 워밍업 세트는 sets[].is_warmup=true (b) 컨디션 안 좋아 그날만 가볍게 한 디로드 세션은 is_deload=true (c) 여러 운동을 한 묶음으로 한 슈퍼셋/자이언트셋은 같은 superset_group 키 ('ss-<짧은랜덤>' 형식, AI 가 생성) 로 묶을 routine 들 각각 log_routine_session. 모두 next_target 추론에서 자동 제외/분리되어 운동 메모리(progression weight) 오염 안 됨. 사용자에게는 코드값/필드명 노출 금지, 사용자 발화 언어로 자연스럽게 확인 — 한국어 예 '앞 2세트는 워밍업으로 기록할까요?' / '오늘은 디로드 데이로 기록할게요 — progression 추적엔 영향 없어요' / '벤치+푸시업 슈퍼셋으로 묶을게요'. 영어 예 'Mark the first 2 sets as warmup?' / 'Logging today as a deload — won\\'t affect progression' / 'Grouping bench+pushup as a superset'.",
+  "★ working_value 는 사용자의 '공식 현재 능력치' — next_target 계산의 base. 코드는 자동 갱신 X. 세션 기록 직후 next_target 호출 시 working_value_recommendation.recommend_update=true 가 뜨면 (예 '직전 본세트 평균이 working_value 보다 큼') 반드시 사용자에게 사용자 발화 언어로 묻고 합의 받은 뒤 update_routine_state 호출 — 한국어 예 '오늘 100kg 3세트 무난히 했어요. 현재 능력치를 100kg 으로 갱신할까요?' / 영어 예 'You handled 100kg × 3 cleanly today. Update your working value to 100kg?'. 합의 없이 자동 갱신 금지. 'working_value' 같은 영어 코드값 노출 금지 — '현재 능력치' / 'working value' / 'standard weight' 처럼 자연어로.",
+  "★ 운동 계획·다음 세트 추천 시 routine.memo 반드시 먼저 읽고 반영. 메모는 자유 텍스트 — AI 가 해석. 예 '이 머신은 7kg 단위로만 증량' 이면 next_target 그대로 쓰지 말고 7kg 배수로 라운드 + default_increment 도 7로 update_routine_state. '어깨 부상 회복 중 — 더 증량 X' 면 RPE 가 낮아도 증량 추천하지 말 것. '8월까지 디로드 위주' 면 is_deload 권장. 메모와 next_target 추천이 충돌하면 메모가 우선. 메모 등록/수정 시 코드값 노출 금지 — '루틴 메모' / 'routine memo' 처럼 자연어로 합의 후 update_routine_state 호출.",
   "분할 등록 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 분할 등록 안 함.",
 ];
 
@@ -52,6 +54,7 @@ export async function run({ input, data }: {
     case "ack_reminder": return ackReminder(args, data);
     case "define_user_fact": return defineUserFact(args, data);
     case "define_split_plan": return defineSplitPlan(args, data);
+    case "update_routine_state": return updateRoutineState(args, data);
     case "delete_entity": return deleteEntity(args, data);
     case "get_state": return getState(data);
     case "next_target": return nextTarget(args, data);
@@ -226,6 +229,22 @@ async function defineRoutine(args: any, data: Data) {
     throw new Error("target_reps_min 과 target_reps_max 는 같이 입력 (둘 다 또는 둘 다 생략).");
   }
 
+  // working_value: 등록 시 초기값 (선택)
+  let working_value: number | null = null;
+  if (args.working_value !== undefined && args.working_value !== null) {
+    const wv = Number(args.working_value);
+    if (!Number.isFinite(wv) || wv < 0) throw new Error("working_value 는 0 이상의 숫자.");
+    working_value = wv;
+  }
+
+  // memo: 자유 텍스트 (선택)
+  let memo: string | null = null;
+  if (args.memo !== undefined && args.memo !== null && args.memo !== "") {
+    const m = String(args.memo);
+    if (m.length > 1000) throw new Error("memo 는 1000자 이내.");
+    memo = m;
+  }
+
   const routine = {
     slug, display_name, progression, unit, category,
     default_rpe_target: typeof args.default_rpe_target === "number" ? args.default_rpe_target : 8,
@@ -235,10 +254,110 @@ async function defineRoutine(args: any, data: Data) {
     target_reps,
     target_reps_min,
     target_reps_max,
+    working_value,
+    memo,
     defined_at: nowIso(),
   };
   await data.set(`routine:${slug}`, routine);
   return { routine };
+}
+
+async function updateRoutineState(args: any, data: Data) {
+  const slug = String(args.slug ?? "").trim();
+  if (!slug) throw new Error("slug 필수.");
+  const existing = await data.get(`routine:${slug}`);
+  if (!existing) throw new Error(`등록되지 않은 운동 slug: ${slug}. define_routine_exercise 먼저.`);
+
+  const patch: Record<string, any> = { ...existing };
+
+  // working_value: number | null
+  if ("working_value" in args) {
+    if (args.working_value === null) {
+      patch.working_value = null;
+    } else {
+      const wv = Number(args.working_value);
+      if (!Number.isFinite(wv) || wv < 0) throw new Error("working_value 는 0 이상의 숫자 또는 null.");
+      patch.working_value = wv;
+    }
+  }
+
+  // memo: string | null (빈 문자열도 클리어 취급)
+  if ("memo" in args) {
+    if (args.memo === null || args.memo === "") {
+      patch.memo = null;
+    } else {
+      const m = String(args.memo);
+      if (m.length > 1000) throw new Error("memo 는 1000자 이내.");
+      patch.memo = m;
+    }
+  }
+
+  // default_increment: number | null
+  if ("default_increment" in args) {
+    if (args.default_increment === null) {
+      patch.default_increment = null;
+    } else {
+      const di = Number(args.default_increment);
+      if (!Number.isFinite(di) || di <= 0) throw new Error("default_increment 는 0 초과 숫자 또는 null.");
+      patch.default_increment = di;
+    }
+  }
+
+  // default_rpe_target: number (1~10)
+  if ("default_rpe_target" in args && args.default_rpe_target !== null) {
+    const t = Number(args.default_rpe_target);
+    if (!Number.isFinite(t) || t < 1 || t > 10) throw new Error("default_rpe_target 은 1~10.");
+    patch.default_rpe_target = t;
+  }
+
+  // weekly_cap: number | null
+  if ("weekly_cap" in args) {
+    if (args.weekly_cap === null) {
+      patch.weekly_cap = null;
+    } else {
+      const c = Number(args.weekly_cap);
+      if (!Number.isFinite(c) || c < 0) throw new Error("weekly_cap 은 0 이상 또는 null.");
+      patch.weekly_cap = c;
+    }
+  }
+
+  // target_sets
+  if ("target_sets" in args && args.target_sets !== null && args.target_sets !== undefined) {
+    patch.target_sets = parsePositiveInt(args.target_sets, "target_sets")!;
+  }
+
+  // target_reps + range: 같은 규칙 — 고정 우선, 한쪽만 X
+  let tr = "target_reps" in args ? args.target_reps : undefined;
+  let trMin = "target_reps_min" in args ? args.target_reps_min : undefined;
+  let trMax = "target_reps_max" in args ? args.target_reps_max : undefined;
+
+  // 입력된 필드가 하나라도 있으면 셋 다 함께 재계산
+  if (tr !== undefined || trMin !== undefined || trMax !== undefined) {
+    const newReps = tr === undefined
+      ? (typeof existing.target_reps === "number" ? existing.target_reps : null)
+      : (tr === null ? null : parsePositiveInt(tr, "target_reps"));
+    let newMin = trMin === undefined
+      ? (typeof existing.target_reps_min === "number" ? existing.target_reps_min : null)
+      : (trMin === null ? null : parsePositiveInt(trMin, "target_reps_min"));
+    let newMax = trMax === undefined
+      ? (typeof existing.target_reps_max === "number" ? existing.target_reps_max : null)
+      : (trMax === null ? null : parsePositiveInt(trMax, "target_reps_max"));
+
+    if (newReps !== null) {
+      newMin = null; newMax = null;
+    } else if (newMin !== null && newMax !== null) {
+      if (newMin > newMax) throw new Error("target_reps_min 은 target_reps_max 이하.");
+    } else if ((newMin !== null) !== (newMax !== null)) {
+      throw new Error("target_reps_min 과 target_reps_max 는 같이 설정 (둘 다 또는 둘 다 null).");
+    }
+    patch.target_reps = newReps;
+    patch.target_reps_min = newMin;
+    patch.target_reps_max = newMax;
+  }
+
+  patch.updated_at = nowIso();
+  await data.set(`routine:${slug}`, patch);
+  return { routine: patch };
 }
 
 function normalizeSet(s: any, progression: string): any {
@@ -660,7 +779,8 @@ async function getState(data: Data) {
         .map(r => r.value).filter(nonNull)
         .sort((a: any, b: any) => String(a.performed_at).localeCompare(String(b.performed_at)));
       const last: any = sessions.at(-1) ?? null;
-      return { ...def, session_count: sessions.length, last_session: last };
+      const progression_state = computeProgressionState(def, sessions);
+      return { ...def, session_count: sessions.length, last_session: last, progression_state };
     })),
     Promise.all(reminderDefs.map(async (def: any) => {
       const slots = parseSchedule(def.schedule);
@@ -819,6 +939,81 @@ function routinePlan(routine: any) {
   return { target_sets, target_reps, target_reps_range };
 }
 
+function computeProgressionState(routine: any, sessions: any[]) {
+  const progression = routine.progression || "weight";
+  const direction: "increase" | "decrease" = progression === "time" ? "decrease" : "increase";
+  const wv = typeof routine.working_value === "number" ? routine.working_value : null;
+
+  // 디로드 세션은 progression 추론에서 통째 제외 (워밍업 세트도 제외)
+  const progSessions = sessions.filter((s: any) => s.is_deload !== true);
+  if (progSessions.length === 0) {
+    return {
+      working_value: wv,
+      current_value: null,
+      current_at: null,
+      pr_value: null,
+      pr_at: null,
+      baseline_value: null,
+      baseline_at: null,
+      direction,
+    };
+  }
+
+  // current = 가장 최근 본세션의 본세트 평균
+  let current_value: number | null = null;
+  let current_at: string | null = null;
+  for (let i = progSessions.length - 1; i >= 0; i--) {
+    const sess: any = progSessions[i];
+    const work = sess.sets.filter((s: any) => s.is_warmup !== true);
+    if (work.length > 0) {
+      current_value = mean(work.map((s: any) => setValue(s, progression)));
+      current_at = sess.performed_at;
+      break;
+    }
+  }
+
+  // baseline = 첫 본세션의 본세트 평균
+  let baseline_value: number | null = null;
+  let baseline_at: string | null = null;
+  for (const sess of progSessions) {
+    const work = sess.sets.filter((s: any) => s.is_warmup !== true);
+    if (work.length > 0) {
+      baseline_value = mean(work.map((s: any) => setValue(s, progression)));
+      baseline_at = sess.performed_at;
+      break;
+    }
+  }
+
+  // PR = 모든 본세션 · 본세트 단일값 중 최댓값 (time 은 최솟값)
+  let pr_value: number | null = null;
+  let pr_at: string | null = null;
+  for (const sess of progSessions) {
+    for (const s of sess.sets) {
+      if (s.is_warmup === true) continue;
+      const v = setValue(s, progression);
+      if (!Number.isFinite(v)) continue;
+      if (pr_value === null) {
+        pr_value = v;
+        pr_at = sess.performed_at;
+      } else if (direction === "increase" ? v > pr_value : v < pr_value) {
+        pr_value = v;
+        pr_at = sess.performed_at;
+      }
+    }
+  }
+
+  return {
+    working_value: wv,
+    current_value,
+    current_at,
+    pr_value,
+    pr_at,
+    baseline_value,
+    baseline_at,
+    direction,
+  };
+}
+
 async function computeNextTarget(slug: string, data: Data) {
   const routine = await data.get(`routine:${slug}`);
   if (!routine) throw new Error(`등록되지 않은 운동 slug: ${slug}.`);
@@ -828,9 +1023,33 @@ async function computeNextTarget(slug: string, data: Data) {
     .sort((a: any, b: any) => String(a.performed_at).localeCompare(String(b.performed_at)));
 
   const plan = routinePlan(routine);
+  const progression = routine.progression || "weight";
+  const direction: "increase" | "decrease" = progression === "time" ? "decrease" : "increase";
+  const hasWV = typeof routine.working_value === "number";
+
+  // 신호 부족 (세션/본세션/본세트 없음) 시 — working_value 있으면 그걸 시작점으로 제안
+  const fallbackNoSignal = (reason: string, extra: Record<string, any> = {}) => {
+    if (hasWV) {
+      return {
+        next_target: routine.working_value,
+        unit: routine.unit,
+        progression,
+        direction,
+        plan,
+        basis: {
+          base_value: routine.working_value,
+          base_source: "working_value",
+          ...extra,
+          reason,
+        },
+        working_value_recommendation: null,
+      };
+    }
+    return { next_target: null, plan, reason, ...extra };
+  };
 
   if (sessions.length === 0) {
-    return { next_target: null, plan, reason: "세션 기록 없음 — 시작 값은 사용자가 선택." };
+    return fallbackNoSignal("세션 기록 없음 — 시작 값은 사용자가 선택.");
   }
 
   // 디로드 세션은 progression 추론에서 통째 제외
@@ -838,7 +1057,10 @@ async function computeNextTarget(slug: string, data: Data) {
   const skipped_deload = sessions.length - progSessions.length;
 
   if (progSessions.length === 0) {
-    return { next_target: null, plan, reason: `최근 ${sessions.length}개 세션이 모두 디로드 — 추론 가능한 본세션 없음.`, sessions_skipped_deload: skipped_deload };
+    return fallbackNoSignal(
+      `최근 ${sessions.length}개 세션이 모두 디로드 — 추론 가능한 본세션 없음.`,
+      { sessions_skipped_deload: skipped_deload },
+    );
   }
 
   const last: any = progSessions[progSessions.length - 1];
@@ -847,11 +1069,11 @@ async function computeNextTarget(slug: string, data: Data) {
   const skipped_warmup = last.sets.length - workSets.length;
 
   if (workSets.length === 0) {
-    return { next_target: null, plan, reason: "직전 비-디로드 세션의 본세트 없음 (전부 워밍업).", sessions_skipped_deload: skipped_deload, warmup_sets_skipped: skipped_warmup };
+    return fallbackNoSignal(
+      "직전 비-디로드 세션의 본세트 없음 (전부 워밍업).",
+      { sessions_skipped_deload: skipped_deload, warmup_sets_skipped: skipped_warmup },
+    );
   }
-
-  const progression = routine.progression || "weight";
-  const direction: "increase" | "decrease" = progression === "time" ? "decrease" : "increase";
 
   const lastAvgRpe = mean(workSets.map((s: any) => Number(s.rpe)));
   const lastAvgValue = mean(workSets.map((s: any) => setValue(s, progression)));
@@ -876,7 +1098,11 @@ async function computeNextTarget(slug: string, data: Data) {
   else push = -1;
 
   const delta = direction === "increase" ? push * increment : -(push * increment);
-  let proposed = lastAvgValue + delta;
+
+  // base = working_value (등록된 능력치) 우선, 없으면 직전 본세트 평균 fallback
+  const baseValue = hasWV ? routine.working_value : lastAvgValue;
+  const baseSource = hasWV ? "working_value" : "last_session_avg";
+  let proposed = baseValue + delta;
 
   // weekly_cap baseline 도 디로드/워밍업 제외
   let cap_applied = false;
@@ -902,6 +1128,43 @@ async function computeNextTarget(slug: string, data: Data) {
     }
   }
 
+  // working_value 갱신 추천 — 코드는 자동 반영 안 함, AI 가 사용자 합의 후 update_routine_state 호출
+  const wvRec = (() => {
+    if (!hasWV) {
+      return {
+        current_working_value: null,
+        last_session_avg: lastAvgValue,
+        diff: null,
+        suggested_new_value: lastAvgValue,
+        recommend_update: true,
+        reason: "working_value 미설정 — 직전 본세트 평균을 working_value 로 등록 권장.",
+      };
+    }
+    const diff = lastAvgValue - routine.working_value;
+    const recommend = Math.abs(diff) >= increment * 0.5;
+    let reason: string;
+    if (!recommend) {
+      reason = "직전 본세트 평균이 working_value 와 거의 동일 — 갱신 불필요.";
+    } else if (direction === "increase") {
+      reason = diff > 0
+        ? "직전 본세트 평균이 working_value 보다 큼 — 능력치 갱신 권장."
+        : "직전 본세트 평균이 working_value 보다 낮음 — 능력치 하향 조정 검토 권장.";
+    } else {
+      // time: 낮을수록 좋음 — diff<0 이면 더 짧아졌다는 뜻 (성장)
+      reason = diff < 0
+        ? "직전 본세트 시간이 working_value 보다 짧음 — 능력치 갱신 권장."
+        : "직전 본세트 시간이 working_value 보다 김 — 능력치 하향 조정 검토 권장.";
+    }
+    return {
+      current_working_value: routine.working_value,
+      last_session_avg: lastAvgValue,
+      diff,
+      suggested_new_value: recommend ? lastAvgValue : routine.working_value,
+      recommend_update: recommend,
+      reason,
+    };
+  })();
+
   return {
     next_target: proposed,
     unit: routine.unit,
@@ -909,6 +1172,8 @@ async function computeNextTarget(slug: string, data: Data) {
     direction,
     plan,
     basis: {
+      base_value: baseValue,
+      base_source: baseSource,
       last_avg_value: lastAvgValue,
       last_avg_rpe: lastAvgRpe,
       target_rpe: target,
@@ -923,6 +1188,7 @@ async function computeNextTarget(slug: string, data: Data) {
       work_sets_used: workSets.length,
       last_session_superset_group: last.superset_group ?? null,
     },
+    working_value_recommendation: wvRec,
   };
 }
 
@@ -1319,6 +1585,28 @@ function formatRoutinePlan(r: any): string {
   return `${sets}세트`;
 }
 
+function formatProgressionState(r: any): string {
+  const ps = r.progression_state;
+  if (!ps) return "";
+  const unit = r.unit ? escapeHtml(String(r.unit)) : "";
+  const fmt = (v: number | null) => v === null ? null : `${roundForDisplay(v)}${unit ? ` ${unit}` : ""}`;
+  const parts: string[] = [];
+  const cur = fmt(ps.current_value);
+  const wv = fmt(ps.working_value);
+  const pr = fmt(ps.pr_value);
+  if (wv) parts.push(`현재 능력치 <b>${wv}</b>`);
+  if (cur && (!wv || ps.current_value !== ps.working_value)) parts.push(`직전 ${cur}`);
+  if (pr) parts.push(`최고 ${pr}`);
+  return parts.join(" · ");
+}
+
+function roundForDisplay(v: number): string {
+  if (!Number.isFinite(v)) return String(v);
+  // 정수면 정수로, 아니면 소수점 2자리까지
+  if (Math.abs(v - Math.round(v)) < 1e-9) return String(Math.round(v));
+  return (Math.round(v * 100) / 100).toString();
+}
+
 function formatLastSessionSummary(last: any): string {
   if (!last) return '<span class="meta">기록 없음</span>';
   const date = escapeHtml(String(last.performed_at).slice(0, 10));
@@ -1348,6 +1636,13 @@ function renderExerciseCard(routines: any[], activities: any[]): string {
     const planHtml = planStr ? ` <span class="meta">· ${escapeHtml(planStr)}</span>` : "";
     const summary = formatLastSessionSummary(r.last_session);
     html += `<div class="row"><div class="name">${escapeHtml(r.display_name)} ${progBadge}${planHtml}</div><div class="val">${summary}</div></div>`;
+    const stateLine = formatProgressionState(r);
+    if (stateLine) {
+      html += `<div class="meta" style="margin-left:4px;margin-bottom:4px">${stateLine}</div>`;
+    }
+    if (r.memo) {
+      html += `<div class="meta" style="margin-left:4px;margin-bottom:6px">📝 ${escapeHtml(r.memo)}</div>`;
+    }
   }
   if (activities.length > 0) {
     html += `<div class="meta" style="margin:8px 0 4px">최근 7일 활동 ${activities.length}건</div>`;
