@@ -136,7 +136,7 @@ next_session_goal: {    // null 또는
 
 | 부류 | id 형식 | 예 |
 |---|---|---|
-| **정의(definition)** | slug (snake_case) | `squat` / `body_weight_kg` / `morning_glucose` |
+| **정의(definition)** | slug (snake_case) | `squat` / `body_weight_kg` / `morning_glucose` / `breakfast_oatmeal` (끼 프리셋) |
 | **기록(record)** | 전체 storage key (prefix 포함) | `meal:2026-05-25T08:30:00.000Z:k4j2a9x1` / `session:squat:2026-05-25T18:00:00.000Z:p3l9m2q5` |
 
 기록 id 는 `get_state` 에서 자동 surface:
@@ -148,13 +148,18 @@ next_session_goal: {    // null 또는
 | 최근 세션 | `routines[].last_session.id` |
 | 최근 활동 | `recent_activities[].id` |
 
-### 끼니 수정 — `log_meal` upsert
+### 끼니 4가지 모드 — `log_meal`
 
-```
-log_meal({ id: "meal:...", name: "점심 (수정)", kcal: 700, ... })
-```
+`log_meal` 한 도구가 4가지 모드를 통합 처리 (조합 가능):
 
-`id` 를 함께 넘기면 같은 key 덮어쓰기 (값만 변경). 신규는 `id` 생략.
+| 모드 | args | 동작 |
+|---|---|---|
+| ① 신규 등록 | `{ name, kcal?, ... }` | 새 끼니 1건 기록 |
+| ② 수정 (upsert) | `{ id: "meal:...", name, kcal?, ... }` | 같은 key 덮어쓰기 |
+| ③ 프리셋 등록 | `{ name, kcal?, ..., as_preset_slug: "breakfast_oatmeal" }` | 끼니 기록 + 프리셋(`meal_preset:slug`) 동시 저장 |
+| ④ 프리셋 호출 | `{ from_preset_slug: "breakfast_oatmeal" }` | 프리셋의 영양값을 기본값으로 채워 끼니 기록. 호출 args 가 명시한 값은 override 우선. `name` 도 생략 가능 |
+
+자주 먹는 끼는 한 번 프리셋으로 저장하면 다음부터 `from_preset_slug` 한 줄로 호출 가능 — AI 와의 대화 부담 감소. 등록된 프리셋 목록은 `get_state.meal_presets[]` 로 노출 (식단 탭에 카드로 시각화). 프리셋 slug 는 사용자 노출 금지 — `name` 으로만 자연어 표현.
 
 ### 기타 기록 수정·삭제 — `delete_entity`
 
@@ -256,6 +261,6 @@ delete_entity({ kind: "session", id: "session:squat:..." })
 
 ## 도구 16개
 
-`set_goal` · `define_routine_exercise` · `log_routine_session` · `log_activity` · `define_metric` · `record_metric` · `log_meal` (신규 또는 `id` 로 upsert) · `define_reminder` · `ack_reminder` · `define_user_fact` · `define_split_plan` · `update_routine_state` (routine 비-구조 필드 patch — working_value · memo · default_increment · target_* 등) · `delete_entity` (정의 5종 + 기록 4종 통합 — routine/metric/reminder/fact/split_plan + meal/measure/session/activity) · `get_state` · `next_target` · `suggest_setup`
+`set_goal` · `define_routine_exercise` · `log_routine_session` · `log_activity` · `define_metric` · `record_metric` · `log_meal` (4모드 통합 — 신규 / `id` upsert / `as_preset_slug` 프리셋 등록 / `from_preset_slug` 프리셋 호출) · `define_reminder` · `ack_reminder` · `define_user_fact` · `define_split_plan` · `update_routine_state` (routine 비-구조 필드 patch — working_value · memo · default_increment · target_* 등) · `delete_entity` (정의 6종 + 기록 4종 통합 — routine/metric/reminder/fact/split_plan/meal_preset + meal/measure/session/activity) · `get_state` · `next_target` · `suggest_setup`
 
 알람 푸시(`check_reminders`)와 위젯(`render_dashboard`)은 도구 매니페스트 외 자동 호출.

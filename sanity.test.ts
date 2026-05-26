@@ -202,6 +202,138 @@ test("delete_entity 모르는 kind → 에러 메시지에 신규 kind 포함", 
   assert(err && /meal/.test(err.message) && /session/.test(err.message), "에러에 meal/session 언급");
 });
 
+// ── 끼니 프리셋 ───────────────────────────────────────
+test("log_meal as_preset_slug — 끼니 + 프리셋 동시 저장", async () => {
+  const data = makeData();
+  const r = await call(data, "log_meal", {
+    name: "아침 오트밀+요거트", kcal: 420, protein_g: 25, carbs_g: 55, fat_g: 12,
+    as_preset_slug: "breakfast_oatmeal",
+  });
+  assert(r.preset_saved, "preset_saved 반환");
+  eq(r.preset_saved.slug, "breakfast_oatmeal", "slug 보존");
+  eq(r.preset_saved.name, "아침 오트밀+요거트", "name 보존");
+  eq(r.preset_saved.kcal, 420, "kcal 보존");
+  eq(r.preset_saved.protein_g, 25, "protein 보존");
+  // 끼니도 같이 저장됐는지 확인
+  eq(r.today_totals.count, 1, "끼니 1건");
+  // get_state.meal_presets 에 노출
+  const s = await call(data, "get_state", {});
+  eq(s.meal_presets.length, 1, "프리셋 1개");
+  eq(s.meal_presets[0].slug, "breakfast_oatmeal", "프리셋 slug 노출");
+});
+
+test("log_meal from_preset_slug — 프리셋 영양값 자동 채움", async () => {
+  const data = makeData();
+  // 프리셋 등록
+  await call(data, "log_meal", {
+    name: "아침 오트밀", kcal: 400, protein_g: 20, carbs_g: 50, fat_g: 10,
+    as_preset_slug: "breakfast",
+  });
+  // 다음 날 같은 프리셋 호출 — name/macro 다 생략
+  const r = await call(data, "log_meal", { from_preset_slug: "breakfast" });
+  eq(r.saved.name, "아침 오트밀", "name 자동 채움");
+  eq(r.saved.kcal, 400, "kcal 자동 채움");
+  eq(r.saved.protein_g, 20, "protein 자동 채움");
+  eq(r.saved.carbs_g, 50, "carbs 자동 채움");
+  eq(r.saved.fat_g, 10, "fat 자동 채움");
+  eq(r.preset_used, "breakfast", "preset_used 보고");
+});
+
+test("log_meal from_preset_slug — 명시 args 가 프리셋 override", async () => {
+  const data = makeData();
+  await call(data, "log_meal", {
+    name: "기본 아침", kcal: 400, protein_g: 20,
+    as_preset_slug: "breakfast",
+  });
+  // 호출 시 kcal 만 override
+  const r = await call(data, "log_meal", {
+    from_preset_slug: "breakfast", kcal: 500,
+  });
+  eq(r.saved.name, "기본 아침", "name 은 프리셋");
+  eq(r.saved.kcal, 500, "kcal 는 override");
+  eq(r.saved.protein_g, 20, "protein 은 프리셋");
+});
+
+test("log_meal from_preset_slug — name override 가능", async () => {
+  const data = makeData();
+  await call(data, "log_meal", {
+    name: "기본 아침", kcal: 400,
+    as_preset_slug: "breakfast",
+  });
+  const r = await call(data, "log_meal", {
+    from_preset_slug: "breakfast", name: "오늘은 아점",
+  });
+  eq(r.saved.name, "오늘은 아점", "name override 우선");
+  eq(r.saved.kcal, 400, "kcal 는 프리셋");
+});
+
+test("log_meal from_preset_slug — 존재하지 않는 프리셋 → 에러", async () => {
+  const data = makeData();
+  let err: any = null;
+  try { await call(data, "log_meal", { from_preset_slug: "nope" }); } catch (e) { err = e; }
+  assert(err && /프리셋/.test(err.message), "프리셋 없음 에러");
+});
+
+test("log_meal as_preset_slug — 잘못된 snake_case → 에러", async () => {
+  const data = makeData();
+  let err: any = null;
+  try { await call(data, "log_meal", { name: "x", as_preset_slug: "BadSlug" }); } catch (e) { err = e; }
+  assert(err && /snake_case/.test(err.message), "snake_case 에러");
+});
+
+test("log_meal from_preset_slug — 잘못된 snake_case → 에러", async () => {
+  const data = makeData();
+  let err: any = null;
+  try { await call(data, "log_meal", { from_preset_slug: "Bad-Slug" }); } catch (e) { err = e; }
+  assert(err && /snake_case/.test(err.message), "snake_case 에러");
+});
+
+test("log_meal as_preset_slug 같은 slug 재호출 → 프리셋 덮어쓰기", async () => {
+  const data = makeData();
+  await call(data, "log_meal", {
+    name: "아침 V1", kcal: 400,
+    as_preset_slug: "breakfast",
+  });
+  await call(data, "log_meal", {
+    name: "아침 V2", kcal: 500,
+    as_preset_slug: "breakfast",
+  });
+  const s = await call(data, "get_state", {});
+  eq(s.meal_presets.length, 1, "프리셋 여전히 1개 (덮어쓰기)");
+  eq(s.meal_presets[0].name, "아침 V2", "최신 name");
+  eq(s.meal_presets[0].kcal, 500, "최신 kcal");
+});
+
+test("delete_entity meal_preset — slug 로 삭제", async () => {
+  const data = makeData();
+  await call(data, "log_meal", {
+    name: "삭제 대상", kcal: 300,
+    as_preset_slug: "to_delete",
+  });
+  const s1 = await call(data, "get_state", {});
+  eq(s1.meal_presets.length, 1, "프리셋 등록됨");
+
+  const d = await call(data, "delete_entity", { kind: "meal_preset", id: "to_delete" });
+  eq(d.deleted, true, "삭제 성공");
+
+  const s2 = await call(data, "get_state", {});
+  eq(s2.meal_presets.length, 0, "프리셋 0개");
+});
+
+test("delete_entity 에러 메시지에 meal_preset 포함", async () => {
+  const data = makeData();
+  let err: any = null;
+  try { await call(data, "delete_entity", { kind: "unknown", id: "x" }); } catch (e) { err = e; }
+  assert(err && /meal_preset/.test(err.message), "에러에 meal_preset 언급");
+});
+
+test("log_meal — name 도 프리셋도 없으면 에러", async () => {
+  const data = makeData();
+  let err: any = null;
+  try { await call(data, "log_meal", {}); } catch (e) { err = e; }
+  assert(err && /name/.test(err.message), "name 필수 에러");
+});
+
 // ── 실행 ───────────────────────────────────────────────
 (async () => {
   for (const t of tests) {

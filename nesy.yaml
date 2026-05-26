@@ -210,17 +210,24 @@ tools:
 
   - name: log_meal
     description: |
-      끼 한 건을 기록하거나 수정한다 (upsert). name 만 필수, 영양 필드(kcal/protein_g/carbs_g/fat_g)는 모두 선택 — AI 가 사용자 발화에서 추정/보조.
-      신규 등록: id 생략 — 코드가 새 key 생성.
-      수정: id 에 기존 끼니의 전체 key ('meal:...' 형식) 전달 — get_state.meals_today.items[].id 에서 가져옴. 같은 key 덮어쓰기.
-      반환 { saved, id, today_totals, maintenance }. id 는 저장된 전체 key — 사용자에게 노출 금지, AI 내부 추적용.
+      끼 한 건을 기록·수정·프리셋 등록·프리셋 호출을 모두 처리하는 통합 도구.
+
+      4가지 모드 (조합 가능):
+        ① 신규 등록 — id 생략, name 필수, 영양 필드 선택.
+        ② 수정 (upsert) — id 에 기존 끼니의 전체 key ('meal:...') 전달 (get_state.meals_today.items[].id 에서 가져옴). 같은 key 덮어쓰기.
+        ③ 프리셋 등록 — as_preset_slug 와 함께 호출 시 끼 기록 + 프리셋 동시 저장 (meal_preset:{slug} 키). 같은 slug 면 덮어쓰기. AI 는 사용자 합의 후에만.
+        ④ 프리셋 호출 — from_preset_slug 와 함께 호출 시 프리셋의 영양값을 기본값으로 사용. 호출 args 가 명시한 값은 override 우선. name 도 생략 가능 (프리셋 name 사용).
+
+      영양 필드(kcal/protein_g/carbs_g/fat_g)는 모두 선택 — AI 가 사용자 발화에서 추정/보조.
       activity_factor>0 이고 BMR 자동 계산 조건(height_cm>0, sex≠unspecified, birth_year>0, body_weight_kg 측정 1건 이상)을 모두 충족하면 maintenance 비교(today_delta_kcal)도 포함.
+
+      반환 { saved, id, today_totals, maintenance, preset_used, preset_saved }. id/slug 사용자 노출 금지.
     inputSchema:
       type: object
       properties:
         name:
           type: string
-          description: "끼 이름/메뉴. 예 '아침 — 오트밀+그릭요거트'."
+          description: "끼 이름/메뉴. 예 '아침 — 오트밀+그릭요거트'. from_preset_slug 사용 시 생략 가능 (프리셋 name 사용)."
         kcal:
           type: number
         protein_g:
@@ -234,8 +241,14 @@ tools:
           description: "ISO 8601 시각. 생략하면 호출 시점."
         id:
           type: string
-          description: "선택. 수정 모드 — 기존 끼니의 전체 key ('meal:...' 형식). get_state.meals_today.items[].id 에서 가져옴. 생략하면 새 끼니 등록."
-      required: [name]
+          description: "선택. 수정 모드 — 기존 끼니의 전체 key ('meal:...' 형식). 생략하면 새 끼니 등록."
+        as_preset_slug:
+          type: string
+          description: "선택. snake_case slug. 이 끼니의 영양값을 같은 이름의 프리셋으로도 저장 (meal_preset:{slug} 키). 같은 slug 면 덮어쓰기. AI 가 사용자 합의 후 호출."
+        from_preset_slug:
+          type: string
+          description: "선택. snake_case slug. 기존 프리셋(meal_preset:{slug})에서 영양값을 자동 채움. 호출 args 가 명시한 값은 override 우선. get_state.meal_presets[].slug 에서 가져옴."
+      required: []
 
   - name: define_reminder
     description: |
@@ -437,7 +450,7 @@ tools:
       등록된 entity 또는 과거 기록 한 건을 삭제한다. 사용자가 명시적으로 "지워줘" / "잘못 입력했어" 라고 한 경우에만 호출.
 
       두 부류:
-        정의(definition) — routine / metric / reminder / fact / split_plan: id 는 slug (또는 reminder id). 정의 자체만 삭제, 과거 기록은 남음.
+        정의(definition) — routine / metric / reminder / fact / split_plan / meal_preset: id 는 slug (또는 reminder id, meal_preset 은 프리셋 slug). 정의 자체만 삭제, 과거 기록은 남음.
         기록(record) — meal / measure / session / activity: id 는 전체 storage key (prefix 포함). get_state 에서 가져옴:
           meal → meals_today.items[].id ('meal:...')
           measure → metrics[].latest_id ('measure:slug:...')
@@ -453,10 +466,10 @@ tools:
       properties:
         kind:
           type: string
-          description: "routine / metric / reminder / fact / split_plan / meal / measure / session / activity 중 하나."
+          description: "routine / metric / reminder / fact / split_plan / meal_preset / meal / measure / session / activity 중 하나."
         id:
           type: string
-          description: "정의는 slug (reminder 는 reminder id). 기록은 'meal:...' / 'measure:slug:...' / 'session:slug:...' / 'activity:...' 형식의 전체 storage key — get_state 에서 가져옴."
+          description: "정의는 slug (reminder 는 reminder id, meal_preset 은 프리셋 slug). 기록은 'meal:...' / 'measure:slug:...' / 'session:slug:...' / 'activity:...' 형식의 전체 storage key — get_state 에서 가져옴."
         axis:
           type: string
           description: "kind=fact 일 때만 필수. exercise / health_metric / diet_reminder / baseline 중 하나."
@@ -477,6 +490,7 @@ tools:
         - routines: 등록 루틴들 + 각각의 progression + 최근 세션(last_session.id 포함) + progression_state ({ working_value, current_value, current_at, pr_value, pr_at, baseline_value, baseline_at, direction }) + memo + next_session_goal ({ value, computed_at, source: 'auto'|'manual', note })
         - recent_activities: 최근 7일 비루틴 활동 (각 항목에 id 포함 — delete_entity 용)
         - meals_today: 오늘(timezone 기준) 끼 합계 + 항목 (items[].id — log_meal upsert / delete_entity 용)
+        - meal_presets: 등록된 끼 프리셋 [{slug, name, kcal, protein_g, carbs_g, fat_g, defined_at}]. slug 는 log_meal({from_preset_slug}) 또는 delete_entity({kind:'meal_preset', id:slug}) 에 사용. 사용자에게 slug 노출 금지 — name 으로 자연어 표현.
         - reminders: 등록 알람들 + 오늘 슬롯별 상태(future/due/acked/missed)
         - user_facts: { exercise, health_metric, diet_reminder, baseline } — 축별 fact 묶음
         - split_plans: 등록된 모든 분할 계획 목록

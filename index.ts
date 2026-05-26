@@ -36,6 +36,7 @@ const AI_RULES = [
   "★ 운동 계획·다음 세트 추천 시 routine.memo 반드시 먼저 읽고 반영. 메모는 자유 텍스트 — AI 가 해석. 예 '이 머신은 7kg 단위로만 증량' 이면 next_target 그대로 쓰지 말고 7kg 배수로 라운드 + default_increment 도 7로 update_routine_state. '어깨 부상 회복 중 — 더 증량 X' 면 RPE 가 낮아도 증량 추천하지 말 것. '8월까지 디로드 위주' 면 is_deload 권장. 메모와 next_target 추천이 충돌하면 메모가 우선. 메모 등록/수정 시 코드값 노출 금지 — '루틴 메모' / 'routine memo' 처럼 자연어로 합의 후 update_routine_state 호출.",
   "분할 등록 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 분할 등록 안 함.",
   "★ 기록 수정/삭제 — 사용자가 '아까 등록한 점심 칼로리 잘못 적었어' / '방금 측정한 혈압 지워줘' / '오늘 운동 세션 잘못 입력' 같이 말하면, get_state 의 meals_today.items[].id / metrics[].latest_id / routines[].last_session.id / recent_activities[].id 로 해당 기록의 id 를 찾아 처리. 끼니(meal) 수정은 log_meal({id: 'meal:...', ...새 값}) 로 upsert — 단순. 그 외 기록(measure/session/activity) 수정은 delete_entity({kind, id}) 후 다시 log_* — 별도 update 도구 없음. session 삭제는 자동으로 해당 routine 의 next_session_goal 재계산되어 stale stash 방지. id 는 'meal:...' / 'measure:slug:...' / 'session:slug:...' / 'activity:...' 형식의 전체 key — 사용자에게 절대 노출 금지, 내부에서만 사용. 사용자에겐 자연어로 — 한국어 예 '아까 등록한 점심(450kcal) 을 600kcal 로 수정할게요' / 영어 예 'Updating the lunch you logged earlier (450 kcal) to 600 kcal'.",
+  "★ 끼니 프리셋(meal_preset) — 사용자가 자주 먹는 끼를 한 번 정의해두고 다음에 빠르게 호출. 두 시점: (a) 등록: 사용자가 '이거 자주 먹어, 다음엔 빨리 등록하게 저장해줘' 같이 말하면 log_meal 호출 시 as_preset_slug 추가 — 끼 기록 + 프리셋 동시 저장. (b) 사용: get_state.meal_presets[] 에서 사용자 발화에 해당하는 프리셋 식별 후 log_meal({from_preset_slug: '...'}) — 영양값 자동 채움 (호출 args 가 명시한 값은 override 우선). 프리셋 slug 는 영문 snake_case 라 사용자 노출 금지 — 사용자에겐 프리셋 'name' 으로 합의. 한국어 예 '아침 정식(오트밀+그릭요거트, 400kcal) 으로 등록할게요' / 영어 예 'Logging breakfast as your usual oatmeal+greek yogurt (400 kcal)'. 프리셋 등록 전 반드시 사용자 합의 — 임의 등록 금지. 삭제는 delete_entity({kind:'meal_preset', id: slug}).",
 ];
 
 export async function run({ input, data }: {
@@ -564,16 +565,37 @@ async function recordMetric(args: any, data: Data) {
 }
 
 async function logMeal(args: any, data: Data) {
-  const name = String(args.name ?? "").trim();
-  if (!name) throw new Error("name 필수.");
   const eaten_at = String(args.eaten_at ?? nowIso());
+
+  // from_preset_slug — 프리셋의 영양값을 기본값으로 사용 (호출 args 가 명시한 값이 우선)
+  let preset: any = null;
+  let preset_used_slug: string | null = null;
+  if (args.from_preset_slug !== undefined && args.from_preset_slug !== null && String(args.from_preset_slug).trim() !== "") {
+    const ps = String(args.from_preset_slug).trim();
+    if (!/^[a-z][a-z0-9_]*$/.test(ps)) throw new Error("from_preset_slug 는 snake_case.");
+    preset = await data.get(`meal_preset:${ps}`);
+    if (!preset) throw new Error(`등록되지 않은 끼니 프리셋 slug: ${ps}.`);
+    preset_used_slug = ps;
+  }
+
+  const name = String(args.name ?? preset?.name ?? "").trim();
+  if (!name) throw new Error("name 필수.");
+
+  const pick = (field: string): number | null => {
+    if (typeof args[field] === "number") return args[field];
+    if (preset && typeof preset[field] === "number") return preset[field];
+    return null;
+  };
+
   const meal = {
     name, eaten_at,
-    kcal: typeof args.kcal === "number" ? args.kcal : null,
-    protein_g: typeof args.protein_g === "number" ? args.protein_g : null,
-    carbs_g: typeof args.carbs_g === "number" ? args.carbs_g : null,
-    fat_g: typeof args.fat_g === "number" ? args.fat_g : null,
+    kcal: pick("kcal"),
+    protein_g: pick("protein_g"),
+    carbs_g: pick("carbs_g"),
+    fat_g: pick("fat_g"),
+    from_preset_slug: preset_used_slug,
   };
+
   // id 가 주어지면 upsert (같은 key 덮어쓰기) — 수정용. 없으면 새 key 생성.
   let key: string;
   if (args.id !== undefined && args.id !== null && String(args.id).trim() !== "") {
@@ -585,6 +607,23 @@ async function logMeal(args: any, data: Data) {
     key = `meal:${eaten_at}:${shortRand()}`;
   }
   await data.set(key, meal);
+
+  // as_preset_slug — 이 끼니의 영양 정보를 프리셋으로도 동시 저장 (덮어쓰기)
+  let preset_saved: any = null;
+  if (args.as_preset_slug !== undefined && args.as_preset_slug !== null && String(args.as_preset_slug).trim() !== "") {
+    const ps = String(args.as_preset_slug).trim();
+    if (!/^[a-z][a-z0-9_]*$/.test(ps)) throw new Error("as_preset_slug 는 snake_case.");
+    preset_saved = {
+      slug: ps,
+      name,
+      kcal: meal.kcal,
+      protein_g: meal.protein_g,
+      carbs_g: meal.carbs_g,
+      fat_g: meal.fat_g,
+      defined_at: nowIso(),
+    };
+    await data.set(`meal_preset:${ps}`, preset_saved);
+  }
 
   const settings = await getSettings(data);
   const today = dateInTz(settings.timezone);
@@ -613,7 +652,7 @@ async function logMeal(args: any, data: Data) {
       };
     }
   }
-  return { saved: meal, id: key, today_totals, maintenance };
+  return { saved: meal, id: key, today_totals, maintenance, preset_used: preset_used_slug, preset_saved };
 }
 
 async function defineReminder(args: any, data: Data) {
@@ -771,6 +810,7 @@ async function deleteEntity(args: any, data: Data) {
     case "metric": key = `metric:${id}`; break;
     case "reminder": key = `reminder:${id}`; break;
     case "split_plan": key = `split_plan:${id}`; break;
+    case "meal_preset": key = `meal_preset:${id}`; break;
     case "fact": {
       const axis = String(args.axis ?? "").trim();
       if (!FACT_AXES.includes(axis as FactAxis)) {
@@ -831,7 +871,7 @@ async function deleteEntity(args: any, data: Data) {
       break;
     }
 
-    default: throw new Error("kind 는 routine / metric / reminder / fact / split_plan / meal / measure / session / activity 중 하나.");
+    default: throw new Error("kind 는 routine / metric / reminder / fact / split_plan / meal_preset / meal / measure / session / activity 중 하나.");
   }
   return { deleted: await data.delete(key), kind, id, axis: args.axis ?? null, side_effect: sideEffect };
 }
@@ -843,7 +883,7 @@ async function getState(data: Data) {
   const nowMin = hhmmToMin(hhmmInTz(settings.timezone));
   const sevenDaysAgo = Date.now() - 7 * 86400 * 1000;
 
-  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, splitPlansRaw, derived] = await Promise.all([
+  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, splitPlansRaw, mealPresetsRaw, derived] = await Promise.all([
     data.list("metric:"),
     data.list("routine:"),
     data.list("activity:"),
@@ -851,6 +891,7 @@ async function getState(data: Data) {
     data.list("reminder:"),
     data.list("fact:"),
     data.list("split_plan:"),
+    data.list("meal_preset:"),
     computeDerived(settings, data),
   ]);
   const metricDefs = metricDefsRaw.map(r => r.value).filter(nonNull);
@@ -858,6 +899,7 @@ async function getState(data: Data) {
   const reminderDefs = reminderDefsRaw.map(r => r.value).filter(nonNull);
   const facts = factsRaw.map(r => r.value).filter(nonNull);
   const splitPlans = splitPlansRaw.map(r => r.value).filter(nonNull);
+  const meal_presets = mealPresetsRaw.map(r => r.value).filter(nonNull);
 
   const user_facts = {
     exercise: facts.filter((f: any) => f.axis === "exercise"),
@@ -972,6 +1014,7 @@ async function getState(data: Data) {
     user_facts,
     split_plans: splitPlans,
     active_split_plan,
+    meal_presets,
   };
 }
 
@@ -1460,6 +1503,7 @@ function buildDashboardHtml(tab: string, s: any): string {
     content += renderFactsCard("건강 관련 사실 (알레르기·복용약 등)", s.user_facts.health_metric);
   } else if (tab === "diet") {
     content += renderDietCard(s.meals_today, s.reminders, s.derived, s.settings);
+    content += renderMealPresetCard(s.meal_presets);
     content += renderFactsCard("식단 제약·알람 관련", s.user_facts.diet_reminder);
   } else if (tab === "baseline") {
     content += renderBaselineSettingsCard(s.settings, s.derived);
@@ -1482,8 +1526,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0
 .row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1f1f1f;gap:8px}
 .row:last-child{border-bottom:none}
 .row.hi{background:#1a1530;border-radius:4px;padding-left:6px;padding-right:6px;margin:0 -6px}
-.name{color:#d4d4d4;min-width:0}
-.val{color:#fafafa;font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0;word-break:break-word}
+.row.stacked{flex-direction:column;align-items:stretch;gap:2px;padding:6px 0}
+.row.stacked .name{font-size:11px;color:#a0a0a0}
+.row.stacked .val{text-align:left;white-space:normal;font-size:12px;color:#d4d4d4}
+.name{color:#d4d4d4;min-width:0;word-break:break-word}
+.val{color:#fafafa;font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0;word-break:break-word;overflow-wrap:anywhere}
 .badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;margin-left:6px;vertical-align:middle}
 .ok{background:#15402a;color:#4ade80}
 .warn{background:#4a2f15;color:#fbbf24}
@@ -1737,7 +1784,7 @@ function renderSplitPlanCard(plan: any, routines: any[] = []): string {
   html += `<div class="card"><h3>분할 묶음 상세 (${plan.buckets.length})</h3>`;
   for (const b of plan.buckets) {
     const ordered = formatRoutineOrder(b.routine_slugs, routines);
-    html += `<div class="row"><div class="name">${escapeHtml(b.key)} · ${escapeHtml(b.label)}</div><div class="val"><span class="meta">${ordered || "없음"}</span></div></div>`;
+    html += `<div class="row stacked"><div class="name">${escapeHtml(b.key)} · ${escapeHtml(b.label)}</div><div class="val">${ordered || '<span class="meta">없음</span>'}</div></div>`;
   }
   html += "</div>";
   return html;
@@ -1992,6 +2039,26 @@ function renderDietCard(mealsToday: any, reminders: any[], derived: any, setting
   return html;
 }
 
+function renderMealPresetCard(presets: any[]): string {
+  let html = `<div class="card"><h3>자주 먹는 끼 (${presets.length})</h3>`;
+  if (presets.length === 0) {
+    html += '<div class="empty">등록된 프리셋 없음 — "이거 자주 먹어, 저장해줘" 라고 말하면 다음에 빠르게 등록 가능.</div></div>';
+    return html;
+  }
+  for (const p of presets) {
+    const kcalStr = typeof p.kcal === "number" ? `${p.kcal} kcal` : '<span class="meta">—</span>';
+    const macros = [
+      typeof p.protein_g === "number" ? `P${p.protein_g}` : null,
+      typeof p.carbs_g === "number" ? `C${p.carbs_g}` : null,
+      typeof p.fat_g === "number" ? `F${p.fat_g}` : null,
+    ].filter(Boolean).join("/");
+    const macroHtml = macros ? ` <span class="meal-macro">${escapeHtml(macros)}</span>` : "";
+    html += `<div class="meal-row"><div class="meal-name">${escapeHtml(p.name)}</div><div class="meal-kcal">${kcalStr}</div>${macroHtml}</div>`;
+  }
+  html += "</div>";
+  return html;
+}
+
 function renderDerivedCard(derived: any): string {
   if (!derived || (derived.age === null && derived.bmr === null)) return "";
   let html = '<div class="card"><h3>자동 계산</h3>';
@@ -2036,7 +2103,13 @@ function renderFactsCard(title: string, facts: any[]): string {
   }
   for (const f of facts) {
     const valueStr = factValueSummary(f.value);
-    html += `<div class="row"><div class="name">${escapeHtml(f.label)} <span class="meta">${escapeHtml(f.slug)}</span></div><div class="val">${escapeHtml(valueStr)}</div></div>`;
+    // 짧은 스칼라(`{v: 2.5}` 등) 는 inline, 그 외(목록/구조체)는 stacked 로 값을 다음 줄에
+    const isShort = valueStr.length <= 18 && !valueStr.includes(",") && !valueStr.includes("{");
+    if (isShort) {
+      html += `<div class="row"><div class="name">${escapeHtml(f.label)}</div><div class="val">${escapeHtml(valueStr)}</div></div>`;
+    } else {
+      html += `<div class="row stacked"><div class="name">${escapeHtml(f.label)}</div><div class="val">${escapeHtml(valueStr)}</div></div>`;
+    }
   }
   html += "</div>";
   return html;
