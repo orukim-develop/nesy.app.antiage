@@ -334,6 +334,109 @@ test("log_meal — name 도 프리셋도 없으면 에러", async () => {
   assert(err && /name/.test(err.message), "name 필수 에러");
 });
 
+// ── routine set_size (1세트 고정 크기) ────────────────
+test("define_routine_exercise — set_size 라운드트립", async () => {
+  const data = makeData();
+  const r = await call(data, "define_routine_exercise", {
+    slug: "treadmill_jog", display_name: "트레드밀 조깅",
+    progression: "distance", unit: "km/h", working_value: 9,
+    target_sets: 20, set_size: { value: 1, unit: "min" },
+  });
+  eq(r.routine.set_size.value, 1, "value 보존");
+  eq(r.routine.set_size.unit, "min", "unit 보존");
+  const s = await call(data, "get_state");
+  const def = s.routines.find((x: any) => x.slug === "treadmill_jog");
+  assert(def && def.set_size, "get_state 에 set_size 노출");
+  eq(def.set_size.value, 1, "get_state value");
+  eq(def.set_size.unit, "min", "get_state unit");
+});
+
+test("define_routine_exercise — set_size 생략 → null", async () => {
+  const data = makeData();
+  const r = await call(data, "define_routine_exercise", {
+    slug: "squat", display_name: "백 스쿼트",
+    progression: "weight", category: "compound", unit: "kg",
+  });
+  eq(r.routine.set_size, null, "set_size 생략 시 null");
+});
+
+test("define_routine_exercise — set_size 잘못된 입력 거부", async () => {
+  const data = makeData();
+  const base = { display_name: "x", progression: "reps", unit: "번" };
+  const cases = [
+    { args: { set_size: { value: 0, unit: "min" } }, label: "value_zero" },
+    { args: { set_size: { value: -1, unit: "min" } }, label: "value_neg" },
+    { args: { set_size: { value: 1, unit: "" } }, label: "unit_empty" },
+    { args: { set_size: { value: 1 } }, label: "unit_missing" },
+    { args: { set_size: "not_object" }, label: "not_object" },
+    { args: { set_size: [1, "min"] }, label: "array" },
+    { args: { set_size: { value: "abc", unit: "min" } }, label: "value_nan" },
+    { args: { set_size: { value: 1, unit: "x".repeat(21) } }, label: "unit_too_long" },
+  ];
+  for (const c of cases) {
+    let err: any = null;
+    try { await call(data, "define_routine_exercise", { ...base, slug: `x_${c.label}`, ...c.args }); } catch (e) { err = e; }
+    assert(err && /set_size/.test(err.message), `${c.label}: set_size 에러 메시지 (got: ${err?.message ?? "no error"})`);
+  }
+});
+
+test("update_routine_state — set_size 추가/변경", async () => {
+  const data = makeData();
+  await call(data, "define_routine_exercise", {
+    slug: "rower", display_name: "RowErg",
+    progression: "time", unit: "min/500m", working_value: 2.4,
+  });
+  // 추가
+  const r1 = await call(data, "update_routine_state", {
+    slug: "rower", set_size: { value: 5, unit: "min" },
+  });
+  eq(r1.routine.set_size.value, 5, "추가 후 value");
+  eq(r1.routine.set_size.unit, "min", "추가 후 unit");
+  // 변경
+  const r2 = await call(data, "update_routine_state", {
+    slug: "rower", set_size: { value: 10, unit: "min" },
+  });
+  eq(r2.routine.set_size.value, 10, "변경 후 value");
+});
+
+test("update_routine_state — set_size null 로 클리어", async () => {
+  const data = makeData();
+  await call(data, "define_routine_exercise", {
+    slug: "taekwondo", display_name: "발차기",
+    progression: "reps", unit: "번", working_value: 20,
+    target_sets: 3, target_reps: 20, set_size: { value: 3, unit: "min" },
+  });
+  const r = await call(data, "update_routine_state", { slug: "taekwondo", set_size: null });
+  eq(r.routine.set_size, null, "null 클리어");
+});
+
+test("update_routine_state — set_size 생략 시 기존값 유지", async () => {
+  const data = makeData();
+  await call(data, "define_routine_exercise", {
+    slug: "tk", display_name: "발차기",
+    progression: "reps", unit: "번", working_value: 20,
+    target_sets: 3, target_reps: 20, set_size: { value: 3, unit: "min" },
+  });
+  // memo 만 변경
+  const r = await call(data, "update_routine_state", { slug: "tk", memo: "기술 점검" });
+  eq(r.routine.set_size.value, 3, "set_size 유지");
+  eq(r.routine.set_size.unit, "min", "unit 유지");
+  eq(r.routine.memo, "기술 점검", "memo 변경");
+});
+
+test("render_dashboard — set_size 가 위젯에 표시", async () => {
+  const data = makeData();
+  await call(data, "set_goal", { text: "체력 향상" });
+  await call(data, "define_routine_exercise", {
+    slug: "tk2", display_name: "발차기 훈련",
+    progression: "reps", unit: "번", working_value: 20,
+    target_sets: 3, target_reps: 20, set_size: { value: 3, unit: "min" },
+  });
+  const r = await call(data, "render_dashboard", { tab: "exercise" });
+  assert(typeof r.html === "string", "html 반환");
+  assert(/세트당 3min/.test(r.html), "위젯에 '세트당 3min' 표시");
+});
+
 // ── 실행 ───────────────────────────────────────────────
 (async () => {
   for (const t of tests) {

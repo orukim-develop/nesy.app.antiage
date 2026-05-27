@@ -193,6 +193,21 @@ function parsePositiveInt(v: any, field: string): number | null {
   return n;
 }
 
+function parseSetSize(v: any): { value: number; unit: string } | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "object" || Array.isArray(v)) {
+    throw new Error("set_size 는 { value, unit } 객체.");
+  }
+  const value = Number(v.value);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("set_size.value 는 0 초과의 숫자.");
+  }
+  const unit = String(v.unit ?? "").trim();
+  if (!unit) throw new Error("set_size.unit 필수 (예: 'min', 'sec', 'm').");
+  if (unit.length > 20) throw new Error("set_size.unit 은 20자 이내.");
+  return { value, unit };
+}
+
 async function defineRoutine(args: any, data: Data) {
   const slug = String(args.slug ?? "").trim();
   if (!/^[a-z][a-z0-9_]*$/.test(slug)) throw new Error("slug 는 snake_case (소문자/숫자/_).");
@@ -248,6 +263,9 @@ async function defineRoutine(args: any, data: Data) {
     memo = m;
   }
 
+  // set_size: 1세트의 고정 크기 (선택). 카디오 인터벌(트레드밀 1분), 격투 라운드(3분), RowErg 인터벌(5분) 등.
+  const set_size = parseSetSize(args.set_size);
+
   const routine = {
     slug, display_name, progression, unit, category,
     default_rpe_target: typeof args.default_rpe_target === "number" ? args.default_rpe_target : 8,
@@ -259,6 +277,7 @@ async function defineRoutine(args: any, data: Data) {
     target_reps_max,
     working_value,
     memo,
+    set_size,
     defined_at: nowIso(),
   };
   await data.set(`routine:${slug}`, routine);
@@ -327,6 +346,11 @@ async function updateRoutineState(args: any, data: Data) {
   // target_sets
   if ("target_sets" in args && args.target_sets !== null && args.target_sets !== undefined) {
     patch.target_sets = parsePositiveInt(args.target_sets, "target_sets")!;
+  }
+
+  // set_size: { value, unit } | null (명시적 클리어)
+  if ("set_size" in args) {
+    patch.set_size = args.set_size === null ? null : parseSetSize(args.set_size);
   }
 
   // target_reps + range: 같은 규칙 — 고정 우선, 한쪽만 X
@@ -1819,9 +1843,17 @@ function formatRoutinePlan(r: any): string {
   const reps = typeof r.target_reps === "number" ? r.target_reps : null;
   const minOk = typeof r.target_reps_min === "number";
   const maxOk = typeof r.target_reps_max === "number";
-  if (reps !== null) return `${sets}×${reps}`;
-  if (minOk && maxOk) return `${sets}×${r.target_reps_min}-${r.target_reps_max}`;
-  return `${sets}세트`;
+
+  let base: string;
+  if (reps !== null) base = `${sets}×${reps}`;
+  else if (minOk && maxOk) base = `${sets}×${r.target_reps_min}-${r.target_reps_max}`;
+  else base = `${sets}세트`;
+
+  const ss = r.set_size;
+  if (ss && typeof ss.value === "number" && typeof ss.unit === "string") {
+    base += ` · 세트당 ${roundForDisplay(ss.value)}${ss.unit}`;
+  }
+  return base;
 }
 
 function formatNextSessionGoal(r: any): string {

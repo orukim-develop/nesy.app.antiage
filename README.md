@@ -196,6 +196,19 @@ delete_entity({ kind: "session", id: "session:squat:..." })
 
 위젯 표시 예 — `백 스쿼트 (weight) · 3×5` / `푸시업 (reps) · 3×8-12` / `5km 러닝 (time) · 1세트`.
 
+### set_size — 1세트의 고정 크기 (카디오·인터벌·격투)
+
+스트렝스는 1세트 크기가 가변(reps 가 바뀜)이지만, 카디오 인터벌·격투 라운드는 **1세트 크기가 고정**(시간/거리)이다. 이 경우 `progression`/`working_value` (진척 축)와 분리되는 별도 메타가 필요 → `set_size: { value, unit }`.
+
+| 운동 | progression | working_value | target_sets | target_reps | set_size | 의미 |
+|---|---|---|---|---|---|---|
+| 트레드밀 조깅 | distance | 9 (km/h) | 20 | — | { 1, "min" } | 9km/h 로 1분씩 20세트 |
+| RowErg | time | 2.4167 (min/500m) | 1 | — | { 5, "min" } | 페이스 2:25 로 5분 |
+| 태권도 발차기 | reps | 20 (번) | 3 | 20 | { 3, "min" } | 3분 라운드 3번, 라운드당 20번 |
+| 백 스쿼트 | weight | 100 (kg) | 3 | 5 | (없음) | 5회 가변이라 set_size 불필요 |
+
+선택 필드. 비우면 기존 모델과 동일. 채우면 위젯에 `3×20 · 세트당 3분` 처럼 자연스럽게 표시.
+
 ## RPE — 힘들었음 점수
 
 각 세트 마지막에 1~10 점수로 입력 (높을수록 힘듦). AI 는 사용자에게 RPE 용어 말고 **"힘들었음 점수"** 로 묻는다. `default_rpe_target` (기본 8) 과 비교해서 `next_target` 이 다음 추천값을 계산:
