@@ -37,6 +37,7 @@ const AI_RULES = [
   "분할 등록 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 분할 등록 안 함.",
   "★ 기록 수정/삭제 — 사용자가 '아까 등록한 점심 칼로리 잘못 적었어' / '방금 측정한 혈압 지워줘' / '오늘 운동 세션 잘못 입력' 같이 말하면, get_state 의 meals_today.items[].id / metrics[].latest_id / routines[].last_session.id / recent_activities[].id 로 해당 기록의 id 를 찾아 처리. 끼니(meal) 수정은 log_meal({id: 'meal:...', ...새 값}) 로 upsert — 단순. 그 외 기록(measure/session/activity) 수정은 delete_entity({kind, id}) 후 다시 log_* — 별도 update 도구 없음. session 삭제는 자동으로 해당 routine 의 next_session_goal 재계산되어 stale stash 방지. id 는 'meal:...' / 'measure:slug:...' / 'session:slug:...' / 'activity:...' 형식의 전체 key — 사용자에게 절대 노출 금지, 내부에서만 사용. 사용자에겐 자연어로 — 한국어 예 '아까 등록한 점심(450kcal) 을 600kcal 로 수정할게요' / 영어 예 'Updating the lunch you logged earlier (450 kcal) to 600 kcal'.",
   "★ 끼니 프리셋(meal_preset) — 사용자가 자주 먹는 끼를 한 번 정의해두고 다음에 빠르게 호출. 두 시점: (a) 등록: 사용자가 '이거 자주 먹어, 다음엔 빨리 등록하게 저장해줘' 같이 말하면 log_meal 호출 시 as_preset_slug 추가 — 끼 기록 + 프리셋 동시 저장. (b) 사용: get_state.meal_presets[] 에서 사용자 발화에 해당하는 프리셋 식별 후 log_meal({from_preset_slug: '...'}) — 영양값 자동 채움 (호출 args 가 명시한 값은 override 우선). 프리셋 slug 는 영문 snake_case 라 사용자 노출 금지 — 사용자에겐 프리셋 'name' 으로 합의. 한국어 예 '아침 정식(오트밀+그릭요거트, 400kcal) 으로 등록할게요' / 영어 예 'Logging breakfast as your usual oatmeal+greek yogurt (400 kcal)'. 프리셋 등록 전 반드시 사용자 합의 — 임의 등록 금지. 삭제는 delete_entity({kind:'meal_preset', id: slug}).",
+  "★ set_size — 1세트 고정 크기 (카디오 인터벌·격투 라운드 등). 진척 축(working_value) 과 분리되는 '세트당 크기'. 등록 시점에 반드시 default_increment 도 같이 합의 — 카디오 unit (예 km/h, min/500m) 은 기본 progression 증분(distance=100m, time=30s 등)과 의미가 달라서 default_increment 없으면 next_target 이 nonsense 값(예 9km/h + 100 = 109km/h) 을 낼 수 있음. 코드도 fail-safe — set_size 있고 default_increment 가 null 이면 next_target=null 반환 (사용자에게 다시 묻기). 사용자에게 코드값 노출 금지, 자연어로 — 한국어 예 '한 번에 얼마씩 올릴까요? 0.5km/h 정도?' / 영어 예 'How much per step up? 0.5km/h?'. 또 기존 routine 에 set_size 새로 추가하는 시점에는 display_name 에 같은 정보(분/세트 시간 등)가 박혀있는지 점검 — set_size 가 위젯에 '세트당 N{unit}' 으로 자동 표시되므로 라벨 중복이면 update_routine_state({slug, display_name: '...'}) 로 정리 권유. 예 'RowErg (5분짜리)' → 'RowErg'.",
 ];
 
 export async function run({ input, data }: {
@@ -291,6 +292,14 @@ async function updateRoutineState(args: any, data: Data) {
   if (!existing) throw new Error(`등록되지 않은 운동 slug: ${slug}. define_routine_exercise 먼저.`);
 
   const patch: Record<string, any> = { ...existing };
+
+  // display_name: string (라벨만 변경 — 구조 영향 X)
+  if ("display_name" in args && args.display_name !== null && args.display_name !== undefined) {
+    const dn = String(args.display_name).trim();
+    if (!dn) throw new Error("display_name 은 비어있을 수 없음.");
+    if (dn.length > 200) throw new Error("display_name 은 200자 이내.");
+    patch.display_name = dn;
+  }
 
   // working_value: number | null
   if ("working_value" in args) {
@@ -1258,6 +1267,31 @@ async function computeNextTarget(slug: string, data: Data) {
   const lastAvgRpe = mean(workSets.map((s: any) => Number(s.rpe)));
   const lastAvgValue = mean(workSets.map((s: any) => setValue(s, progression)));
   const target = typeof routine.default_rpe_target === "number" ? routine.default_rpe_target : 8;
+
+  // fail-safe — set_size 가 있는 루틴(카디오 인터벌·격투 라운드)은 unit 의미가 progression 기본 증분과 다를 가능성 높음
+  // (예 progression=distance + unit=km/h 면 9km/h + 100m = 109km/h 같은 nonsense). default_increment 명시 안 했으면 추천 거부.
+  if (routine.set_size && typeof routine.default_increment !== "number") {
+    return {
+      next_target: null,
+      unit: routine.unit,
+      progression,
+      direction,
+      plan,
+      reason: "set_size 가 있는 루틴은 default_increment 명시 필수 — 사용자에게 '한 단계 올릴 때 몇씩?' 물어 update_routine_state 로 등록 후 재호출.",
+      basis: {
+        base_value: null,
+        base_source: "blocked_set_size_requires_increment",
+        last_avg_value: lastAvgValue,
+        last_avg_rpe: lastAvgRpe,
+        target_rpe: target,
+        session_count: sessions.length,
+        sessions_skipped_deload: skipped_deload,
+        warmup_sets_skipped_in_last: skipped_warmup,
+        work_sets_used: workSets.length,
+      },
+      working_value_recommendation: null,
+    };
+  }
 
   let increment: number = typeof routine.default_increment === "number"
     ? routine.default_increment

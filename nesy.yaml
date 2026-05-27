@@ -38,11 +38,12 @@ tools:
 
       set_size — 1세트의 고정 크기 ({ value, unit }, 선택). 진척 축(working_value)과 분리되는 "세트당 크기".
         용도: 카디오 인터벌·격투 라운드처럼 1세트의 크기는 고정이고 진척은 다른 축(속도·페이스·횟수)으로 추적할 때.
-        예 트레드밀 9km/h × 1분 × 20세트 → set_size={value:1, unit:"min"}, progression=distance, working_value=9, target_sets=20
-        예 RowErg 2:25 페이스 × 5분 1세트 → set_size={value:5, unit:"min"}, progression=time, working_value=2.4167, target_sets=1
-        예 태권도 3분 3라운드 발차기 20번 → set_size={value:3, unit:"min"}, progression=reps, working_value=20, target_sets=3, target_reps=20
+        예 트레드밀 9km/h × 1분 × 20세트 → set_size={value:1, unit:"min"}, progression=distance, working_value=9, target_sets=20, default_increment=0.5
+        예 RowErg 2:25 페이스 × 5분 1세트 → set_size={value:5, unit:"min"}, progression=time, working_value=2.4167, target_sets=1, default_increment=0.05
+        예 태권도 3분 3라운드 발차기 20번 → set_size={value:3, unit:"min"}, progression=reps, working_value=20, target_sets=3, target_reps=20, default_increment=2
         스트렝스 루틴(벤치프레스 등 reps 가 가변)에는 보통 생략. 생략 시 null.
         unit 은 자유 문자열(20자 이내). value 는 0 초과 숫자.
+        ★ set_size 사용 시 default_increment 도 반드시 같이 등록 — 카디오 unit (km/h, min/500m 등) 의 기본 증분이 progression 표준값과 안 맞음. 명시 안 하면 next_target 이 null 을 반환하고 사용자에게 다시 묻도록 fail-safe 발동.
 
       working_value — '공식' 현재 능력치. next_target 의 base. 등록 시 초기값 선택 가능. 이후 update_routine_state 로만 갱신. 코드는 자동 갱신 X — 매 세션 후 next_target.working_value_recommendation 보고 AI 가 사용자에게 권유.
       memo — AI 가 매 계획 시 읽고 반영하는 자유 메모. 예 '이 머신 무게 단위 7kg' (→ default_increment 도 같이 7), '어깨 부상 회복 중 — 더 증량 X' (→ RPE 낮아도 증량 보류), '8월까지 디로드 위주'. 메모 우선.
@@ -99,6 +100,7 @@ tools:
             선택. 1세트의 고정 크기 (카디오 인터벌·격투 라운드 등). 진척 축(working_value)과 분리.
             예 트레드밀 1분/세트 → { value: 1, unit: "min" } / 태권도 3분/라운드 → { value: 3, unit: "min" } / RowErg 5분/세트 → { value: 5, unit: "min" }.
             스트렝스(reps 가변) 루틴에는 보통 생략. unit 은 자유 문자열(예 'min', 'sec', 'm', 'km').
+            ★ 사용 시 default_increment 도 반드시 같이 등록 — 안 하면 next_target 이 fail-safe 로 null 반환.
           properties:
             value:
               type: number
@@ -414,6 +416,7 @@ tools:
       같은 slug 의 routine 이 이미 있어야 함. 제공된 필드만 덮어쓰고, 생략한 필드는 그대로 유지.
       필드를 명시적으로 클리어하려면 null 로 명시 (예 working_value: null 로 워킹밸류 리셋, memo: null 또는 "" 로 메모 삭제).
 
+      display_name — 사용자에게 보일 라벨만 변경 (구조 영향 X). set_size 추가 시 라벨에 같은 정보(분/세트 시간 등) 중복이면 정리. 예 'RowErg (5분짜리)' → 'RowErg'. 1~200자.
       working_value — 사용자가 정상적으로 다루는 운동값. 매 세션 후 next_target.working_value_recommendation 보고 직전 본세트 평균과 다르면 AI 가 사용자에게 업데이트 권유 → 합의 시 호출.
       memo — AI 가 매 계획 시 읽고 반영하는 자유 메모 (0~1000자). 예 '이 머신 무게 단위 7kg' → AI 가 default_increment 도 같이 7 로 업데이트 / '더 증량 X' → AI 가 push_multiplier 무시하고 유지 권장.
       next_session_goal — 다음 세션 목표 수동 지정 ({ value, note? }). 사용자가 '다음엔 무조건 100kg' 같이 직접 의지를 표현했을 때만 사용. source 가 자동으로 'manual' 로 마크. log_routine_session 의 자동 stash 가 이후 덮어씀.
@@ -427,6 +430,9 @@ tools:
         slug:
           type: string
           description: 업데이트할 routine 의 slug.
+        display_name:
+          type: string
+          description: "선택. 라벨 새 값 (1~200자). set_size 추가/변경 시 라벨 중복 정리에 사용 — 예 'RowErg (5분짜리)' → 'RowErg'."
         working_value:
           type: number
           description: "선택. 워킹밸류 새 값 (0 이상). null 로 명시하면 클리어."

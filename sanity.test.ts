@@ -424,6 +424,90 @@ test("update_routine_state — set_size 생략 시 기존값 유지", async () =
   eq(r.routine.memo, "기술 점검", "memo 변경");
 });
 
+test("next_target — set_size + default_increment 없으면 fail-safe (null + reason)", async () => {
+  const data = makeData();
+  await call(data, "define_routine_exercise", {
+    slug: "treadmill_jog", display_name: "트레드밀 조깅",
+    progression: "distance", unit: "km/h", working_value: 9,
+    target_sets: 20, set_size: { value: 1, unit: "min" },
+    // default_increment 일부러 생략
+  });
+  await call(data, "log_routine_session", {
+    slug: "treadmill_jog",
+    sets: [{ distance: 9, rpe: 7 }],
+  });
+  const r = await call(data, "next_target", { slug: "treadmill_jog" });
+  eq(r.next_target, null, "next_target null");
+  assert(/default_increment/.test(r.reason), "reason 에 default_increment 언급");
+  eq(r.basis.base_source, "blocked_set_size_requires_increment", "base_source 마크");
+  // 자동 stash 도 안 박혔어야 함 (working_value 9 그대로, next_session_goal 없음)
+  const s = await call(data, "get_state");
+  const def = s.routines.find((x: any) => x.slug === "treadmill_jog");
+  assert(!def.next_session_goal, "next_session_goal stash 안 됨");
+});
+
+test("next_target — 109km/h nonsense 회귀 방지", async () => {
+  // 트레드밀 9km/h. default_increment 안 적었을 때 9+100=109 가 나오면 안 됨.
+  const data = makeData();
+  await call(data, "define_routine_exercise", {
+    slug: "tj2", display_name: "조깅",
+    progression: "distance", unit: "km/h", working_value: 9,
+    set_size: { value: 1, unit: "min" },
+  });
+  await call(data, "log_routine_session", {
+    slug: "tj2",
+    sets: [{ distance: 9, rpe: 6 }], // 낮은 RPE 라 일반 로직이면 큰 push
+  });
+  const r = await call(data, "next_target", { slug: "tj2" });
+  assert(r.next_target === null || r.next_target < 50, `nonsense 값 거부 — got ${r.next_target}`);
+});
+
+test("next_target — set_size + default_increment 명시 시 정상 계산", async () => {
+  const data = makeData();
+  await call(data, "define_routine_exercise", {
+    slug: "tj3", display_name: "조깅",
+    progression: "distance", unit: "km/h", working_value: 9,
+    set_size: { value: 1, unit: "min" }, default_increment: 0.5,
+  });
+  await call(data, "log_routine_session", {
+    slug: "tj3",
+    sets: [{ distance: 9, rpe: 7 }], // target 8 보다 낮음 → push=1 → +0.5
+  });
+  const r = await call(data, "next_target", { slug: "tj3" });
+  eq(r.next_target, 9.5, `next_target 9.5 — got ${r.next_target}`);
+  eq(r.basis.increment, 0.5, "increment 0.5");
+  eq(r.basis.increment_source, "routine.default_increment", "source 마크");
+});
+
+test("update_routine_state — display_name 라벨 변경", async () => {
+  const data = makeData();
+  await call(data, "define_routine_exercise", {
+    slug: "rg", display_name: "RowErg (5분짜리)",
+    progression: "time", unit: "min/500m", working_value: 2.4,
+    set_size: { value: 5, unit: "min" }, default_increment: 0.05,
+  });
+  // set_size 가 위젯에 표시되니 라벨 중복 → 정리
+  const r = await call(data, "update_routine_state", { slug: "rg", display_name: "RowErg" });
+  eq(r.routine.display_name, "RowErg", "라벨 변경 반영");
+  // 다른 필드는 유지
+  eq(r.routine.working_value, 2.4, "working_value 유지");
+  eq(r.routine.set_size.value, 5, "set_size 유지");
+});
+
+test("update_routine_state — display_name 빈 문자열/긴 문자열 거부", async () => {
+  const data = makeData();
+  await call(data, "define_routine_exercise", {
+    slug: "rg2", display_name: "x",
+    progression: "reps", unit: "번",
+  });
+  let err: any = null;
+  try { await call(data, "update_routine_state", { slug: "rg2", display_name: "" }); } catch (e) { err = e; }
+  assert(err && /display_name/.test(err.message), "빈 문자열 거부");
+  err = null;
+  try { await call(data, "update_routine_state", { slug: "rg2", display_name: "x".repeat(201) }); } catch (e) { err = e; }
+  assert(err && /200/.test(err.message), "201자 거부");
+});
+
 test("render_dashboard — set_size 가 위젯에 표시", async () => {
   const data = makeData();
   await call(data, "set_goal", { text: "체력 향상" });
