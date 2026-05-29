@@ -37,6 +37,31 @@ const eq = <T>(actual: T, expected: T, msg: string) => {
 const call = (data: any, tool: string, args: any = {}) =>
   run({ input: { tool, args }, secrets: {}, data });
 
+// ── 면책·가드(_guard) ─────────────────────────────────
+test("_guard — 모든 응답에 조언금지·면책 가드가 동봉된다", async () => {
+  const data = makeData();
+  const samples = [
+    await call(data, "get_state"),
+    await call(data, "set_goal", { text: "건강 기록" }),
+    await call(data, "log_meal", { name: "아침", kcal: 300 }),
+    await call(data, "render_dashboard", { tab: "overview" }),
+  ];
+  for (const r of samples) {
+    assert(r._guard, "_guard 존재");
+    assert(/조언/.test(r._guard.no_advice), "조언 금지 문구");
+    assert(/책임/.test(r._guard.liability), "책임 분리 문구");
+    assert(typeof r._guard.disclaimer === "string" && r._guard.disclaimer.length > 10, "disclaimer 문구 존재");
+  }
+});
+
+test("_guard.disclaimer — 마도서 면책 + AI 책임 + 전문가 상담 포함", async () => {
+  const data = makeData();
+  const d = (await call(data, "get_state"))._guard.disclaimer;
+  assert(/마도서/.test(d), "마도서 면책 언급");
+  assert(/책임/.test(d), "책임 소재 언급");
+  assert(/전문가|의사|영양사/.test(d), "전문가 상담 권고 포함");
+});
+
 // ── 끼니 upsert ───────────────────────────────────────
 test("log_meal 신규 등록 → id 반환", async () => {
   const data = makeData();

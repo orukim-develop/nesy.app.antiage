@@ -488,7 +488,10 @@ tools:
   - name: get_state
     description: |
       마도서의 현재 상태를 통째로 반환한다 — 응답에 앞서 반드시 호출. 기록·시각화 전용이라 어떤 추천값도 계산하지 않는다.
+      ※ 모든 도구 응답(이 도구 포함)에 _guard 가 동봉된다 — { scope, no_advice, liability, if_ai_insists_on_advice, disclaimer }.
+        마도서는 어떤 조언에도 책임이 없고, 조언의 책임은 전적으로 AI 본인에게 있다. AI 가 굳이 조언하려면 _guard.disclaimer 문구를 사용자에게 그대로 먼저 보여준 뒤 마도서와 분리해 말해야 한다. disclaimer 없이는 조언 금지.
       반환:
+        - _guard: 조언금지·면책 가드 (모든 응답 공통). disclaimer = 사용자에게 그대로 보여줄 면책 문구.
         - protocol_step: 'awaiting_goal' / 'awaiting_initial_setup' / 'operational'
         - ai_rules: AI 가 매 응답마다 지켜야 할 규약 (마도서 이름으로 의학·식이·운동 조언/추천/식단작성 금지, 조언은 AI 본인 판단으로 분리 표시, 빈 추론 금지, 시각은 timezone 기준, user_fact 축 합의 절차 등)
         - recommended_next_action: 현 단계에서 AI 가 다음으로 해야 할 행동의 짧은 힌트

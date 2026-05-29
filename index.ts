@@ -15,8 +15,8 @@ const SPLIT_KINDS = ["weekly", "sequence", "freestyle"] as const;
 const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 
 const AI_RULES = [
-  "★ 이 마도서는 '기록' 과 '한눈에 보기(시각화)' 전용이다. 마도서 이름으로 의학·식이·운동 조언/추천/처방/식단작성 절대 금지. 사용자가 적어달라고 한 사실만 적고, 현재 상태와 추이만 보여준다. 다음 무게·칼로리·식단·운동량을 마도서가 정해주지 않는다.",
-  "★ AI(너) 가 스스로 판단해 조언하려면 반드시 '여기서부터는 마도서 기록이 아니라 제(AI) 개인 판단입니다' 라고 분리해 밝힌 뒤 말한다. 마도서가 추천하는 것처럼 말하지 말 것. 의학적 내용은 전문가 상담도 함께 권한다.",
+  "★ 이 마도서는 '기록' 과 '한눈에 보기(시각화)' 전용이다. 마도서 이름으로 의학·식이·운동 조언/추천/처방/식단작성 절대 금지 — 마도서의 어떤 출력값도 조언이 아니다. 사용자가 적어달라고 한 사실만 적고, 현재 상태와 추이만 보여준다. 다음 무게·칼로리·식단·운동량을 마도서가 정해주지 않는다. 모든 도구 응답에 _guard 가 동봉된다 — '몰랐다' 는 통하지 않는다.",
+  "★ 조언 책임 분리(필수) — 마도서는 어떤 조언에도 책임이 없고, 조언의 책임은 전적으로 AI(너) 본인에게 있다. AI 가 굳이 조언하려면 마도서 답변과 분리한 뒤, 응답에 동봉된 _guard.disclaimer 문구를 사용자에게 그대로 먼저 보여주고 말해야 한다. disclaimer 없이는 어떤 조언도 금지. 마도서가 추천하는 것처럼 말하지 말 것. 의학적 내용은 전문가(의사·영양사 등) 상담을 반드시 함께 권한다.",
   "응답 전 반드시 get_state 호출 — 모든 답변·표시는 get_state 의 기록된 사실에만 근거. 사실에 없는 값을 지어내지 말 것.",
   "goal 이 비어있으면 set_goal 부터 — goal 은 사용자가 말한 목표 문장을 그대로 기록만 한다.",
   "사용자가 명시적으로 말한 항목만 등록 — 임의 등록·임의 식단·임의 측정값 생성 절대 금지.",
@@ -39,12 +39,39 @@ const AI_RULES = [
   "칼로리 기준선은 마도서가 계산하지 않는다 (BMR·유지칼로리 산출 금지). 사용자가 직접 '내 하루 기준 칼로리는 X' 라고 정하면 설정값(daily_kcal_reference)으로 기록되어 오늘 섭취와 비교 표시될 뿐 — 적정량을 마도서가 추천하지 않는다.",
 ];
 
+// ── 면책·가드 ──────────────────────────────────────────────
+// 사용자에게 그대로 보여줄 면책 문구. AI 가 조언을 하면 반드시 이 문구를 먼저 보여준 뒤 말한다.
+const ADVICE_DISCLAIMER =
+  "⚠️ 여기서부터는 마도서의 기록이 아니라 AI(저)의 개인 판단입니다. " +
+  "마도서는 기록·시각화만 하며 이 조언에 어떤 책임도 없습니다. " +
+  "이 조언의 책임은 전적으로 AI(저)에게 있습니다. " +
+  "의학·식이·운동 관련 내용은 반드시 의사·영양사 등 전문가와 상담하세요.";
+
+// 모든 도구 응답에 동봉되는 가드. AI 가 매 호출마다 보게 되어 '몰랐다' 가 불가능하다.
+const MADOSEO_GUARD = {
+  scope: "이 마도서는 기록·시각화 전용이다.",
+  no_advice: "마도서 이름으로 의학·식이·운동 조언/추천/처방/식단작성을 절대 하지 않는다. 마도서의 어떤 출력값도 조언이 아니다.",
+  liability: "마도서는 어떤 조언에도 책임이 없다. 조언을 한다면 그 책임은 전적으로 AI 본인에게 있다.",
+  if_ai_insists_on_advice:
+    "AI 가 굳이 조언하려면, 마도서 답변과 명확히 분리한 뒤 아래 disclaimer 문구를 사용자에게 그대로 먼저 보여주고 말해야 한다. disclaimer 없이 조언 금지.",
+  disclaimer: ADVICE_DISCLAIMER,
+};
+
 export async function run({ input, data }: {
   input: { tool: string; args: Record<string, any> };
   secrets: Record<string, string>;
   data: Data;
 }): Promise<any> {
   const { tool, args = {} } = input;
+  const result = await dispatchTool(tool, args, data);
+  // 모든 객체 응답에 가드 동봉 — AI 가 매 호출마다 보게 되어 '몰랐다' 가 불가능하다.
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    return { _guard: MADOSEO_GUARD, ...result };
+  }
+  return result;
+}
+
+async function dispatchTool(tool: string, args: Record<string, any>, data: Data): Promise<any> {
   switch (tool) {
     case "set_goal": return setGoal(args, data);
     case "define_routine_exercise": return defineRoutine(args, data);
@@ -1149,6 +1176,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0
 .crit{background:#4a1515;color:#f87171}
 .due{background:#2a2a4a;color:#93c5fd}
 .empty{color:#666;font-style:italic;padding:4px 0}
+.scope{font-size:10px;color:#666;text-align:center;margin-top:16px;padding-top:10px;border-top:1px solid #1f1f1f;line-height:1.6}
+.scope b{color:#9a8cce}
 .meta{color:#777;font-size:11px}
 .dim{opacity:.6}
 .tag{display:inline-block;font-size:10px;color:#a0a0a0;background:#1f1f1f;padding:1px 6px;border-radius:3px;margin-left:6px;vertical-align:middle}
@@ -1186,6 +1215,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0
 ${tabs.map(([t, l]) => `<button class="tab ${t === tab ? "active" : ""}" data-tab="${t}">${l}</button>`).join("")}
 </div>
 ${content || '<div class="card"><div class="empty">데이터 없음.</div></div>'}
+<div class="scope">이 마도서는 <b>기록·시각화 전용</b>입니다 · 조언·추천을 하지 않습니다<br>조언이 필요하면 AI가 마도서와 분리해 자기 책임으로 말합니다</div>
 <script>
 document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => {
   parent.postMessage({ type: 'widget-state-change', state: { tab: b.dataset.tab } }, '*');
