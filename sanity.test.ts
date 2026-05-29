@@ -109,71 +109,31 @@ test("delete_entity measure — latest_id 로 삭제", async () => {
   eq(state2.metrics[0].latest_value, null, "측정 없음");
 });
 
-test("delete_entity session — next_session_goal 재계산", async () => {
+test("delete_entity session — 기록만 삭제, 사용자가 정한 다음 목표는 건드리지 않음", async () => {
   const data = makeData();
   await call(data, "define_routine_exercise", {
     slug: "bench", display_name: "벤치", progression: "weight", category: "compound", unit: "kg",
-    working_value: 100, target_sets: 3, target_reps: 5,
-  });
-  // 첫 세션 — RPE 7 (target 8 보다 낮음 → push=1 → +2.5)
-  await call(data, "log_routine_session", {
-    slug: "bench",
-    sets: [
-      { reps: 5, weight: 100, rpe: 7 },
-      { reps: 5, weight: 100, rpe: 7 },
-      { reps: 5, weight: 100, rpe: 7 },
-    ],
-  });
-  const s1 = await call(data, "get_state", {});
-  const goal1 = s1.routines[0].next_session_goal;
-  assert(goal1 && goal1.value === 102.5, `첫 stash 102.5 — got ${JSON.stringify(goal1)}`);
-
-  // 두 번째 세션 — RPE 9 (target 8 보다 높음 → push=0 → +0)
-  await call(data, "log_routine_session", {
-    slug: "bench",
-    sets: [
-      { reps: 5, weight: 102.5, rpe: 9 },
-      { reps: 5, weight: 102.5, rpe: 9 },
-      { reps: 5, weight: 102.5, rpe: 9 },
-    ],
-  });
-  const s2 = await call(data, "get_state", {});
-  const goal2 = s2.routines[0].next_session_goal;
-  assert(goal2 && goal2.value === 100, `두번째 stash 100 (working_value 유지) — got ${JSON.stringify(goal2)}`);
-
-  // 두 번째 세션 삭제 → goal 이 다시 첫 세션 기준으로 재계산되어야 함 (102.5)
-  const sessionId = s2.routines[0].last_session.id;
-  assert(typeof sessionId === "string" && sessionId.startsWith("session:bench:"), "session id prefix");
-  const d = await call(data, "delete_entity", { kind: "session", id: sessionId });
-  eq(d.deleted, true, "삭제 성공");
-  eq(d.side_effect?.recomputed_next_session_goal_for, "bench", "side_effect 보고");
-
-  const s3 = await call(data, "get_state", {});
-  const goal3 = s3.routines[0].next_session_goal;
-  assert(goal3 && goal3.value === 102.5, `재계산 후 102.5 (첫 세션 기준) — got ${JSON.stringify(goal3)}`);
-});
-
-test("delete_entity session — 마지막 세션 삭제 시 goal 클리어", async () => {
-  const data = makeData();
-  await call(data, "define_routine_exercise", {
-    slug: "squat", display_name: "스쿼트", progression: "weight", category: "compound", unit: "kg",
     target_sets: 3, target_reps: 5,
   });
+  // 다음 목표는 사용자가 직접 정한 값 — 마도서가 계산하지 않는다.
+  await call(data, "update_routine_state", {
+    slug: "bench", next_session_goal: { value: 102.5, note: "다음엔 이거" },
+  });
   await call(data, "log_routine_session", {
-    slug: "squat", sets: [{ reps: 5, weight: 80, rpe: 7 }],
+    slug: "bench", sets: [{ reps: 5, weight: 100, rpe: 7 }],
   });
   const s1 = await call(data, "get_state", {});
-  assert(s1.routines[0].next_session_goal !== null, "초기 stash 있음");
-
   const sessionId = s1.routines[0].last_session.id;
+  assert(typeof sessionId === "string" && sessionId.startsWith("session:bench:"), "session id prefix");
+
+  // 세션 삭제는 그 기록만 지운다 — 다음 목표를 재계산/클리어하지 않음 (side_effect 없음).
   const d = await call(data, "delete_entity", { kind: "session", id: sessionId });
   eq(d.deleted, true, "삭제 성공");
-  // working_value 가 없으면 신호 부족 → fallback 도 null → goal 클리어
-  // 단 last 세션의 평균이 working_value 의 fallback 으로 잡힐 수 있어 — 확인
+  eq(d.side_effect, null, "세션 삭제 부수효과 없음");
+
   const s2 = await call(data, "get_state", {});
-  // 세션 0개 → next_target=null → stash 클리어
-  assert(s2.routines[0].next_session_goal === null, `세션 0개면 goal null — got ${JSON.stringify(s2.routines[0].next_session_goal)}`);
-  eq(d.side_effect?.cleared_next_session_goal_for, "squat", "cleared side_effect");
+  const goal = s2.routines[0].next_session_goal;
+  assert(goal && goal.value === 102.5, `사용자가 정한 다음 목표 그대로 유지 — got ${JSON.stringify(goal)}`);
 });
 
 // ── id 가 get_state 에 surface ────────────────────────
@@ -424,67 +384,12 @@ test("update_routine_state — set_size 생략 시 기존값 유지", async () =
   eq(r.routine.memo, "기술 점검", "memo 변경");
 });
 
-test("next_target — set_size + default_increment 없으면 fail-safe (null + reason)", async () => {
-  const data = makeData();
-  await call(data, "define_routine_exercise", {
-    slug: "treadmill_jog", display_name: "트레드밀 조깅",
-    progression: "distance", unit: "km/h", working_value: 9,
-    target_sets: 20, set_size: { value: 1, unit: "min" },
-    // default_increment 일부러 생략
-  });
-  await call(data, "log_routine_session", {
-    slug: "treadmill_jog",
-    sets: [{ distance: 9, rpe: 7 }],
-  });
-  const r = await call(data, "next_target", { slug: "treadmill_jog" });
-  eq(r.next_target, null, "next_target null");
-  assert(/default_increment/.test(r.reason), "reason 에 default_increment 언급");
-  eq(r.basis.base_source, "blocked_set_size_requires_increment", "base_source 마크");
-  // 자동 stash 도 안 박혔어야 함 (working_value 9 그대로, next_session_goal 없음)
-  const s = await call(data, "get_state");
-  const def = s.routines.find((x: any) => x.slug === "treadmill_jog");
-  assert(!def.next_session_goal, "next_session_goal stash 안 됨");
-});
-
-test("next_target — 109km/h nonsense 회귀 방지", async () => {
-  // 트레드밀 9km/h. default_increment 안 적었을 때 9+100=109 가 나오면 안 됨.
-  const data = makeData();
-  await call(data, "define_routine_exercise", {
-    slug: "tj2", display_name: "조깅",
-    progression: "distance", unit: "km/h", working_value: 9,
-    set_size: { value: 1, unit: "min" },
-  });
-  await call(data, "log_routine_session", {
-    slug: "tj2",
-    sets: [{ distance: 9, rpe: 6 }], // 낮은 RPE 라 일반 로직이면 큰 push
-  });
-  const r = await call(data, "next_target", { slug: "tj2" });
-  assert(r.next_target === null || r.next_target < 50, `nonsense 값 거부 — got ${r.next_target}`);
-});
-
-test("next_target — set_size + default_increment 명시 시 정상 계산", async () => {
-  const data = makeData();
-  await call(data, "define_routine_exercise", {
-    slug: "tj3", display_name: "조깅",
-    progression: "distance", unit: "km/h", working_value: 9,
-    set_size: { value: 1, unit: "min" }, default_increment: 0.5,
-  });
-  await call(data, "log_routine_session", {
-    slug: "tj3",
-    sets: [{ distance: 9, rpe: 7 }], // target 8 보다 낮음 → push=1 → +0.5
-  });
-  const r = await call(data, "next_target", { slug: "tj3" });
-  eq(r.next_target, 9.5, `next_target 9.5 — got ${r.next_target}`);
-  eq(r.basis.increment, 0.5, "increment 0.5");
-  eq(r.basis.increment_source, "routine.default_increment", "source 마크");
-});
-
 test("update_routine_state — display_name 라벨 변경", async () => {
   const data = makeData();
   await call(data, "define_routine_exercise", {
     slug: "rg", display_name: "RowErg (5분짜리)",
     progression: "time", unit: "min/500m", working_value: 2.4,
-    set_size: { value: 5, unit: "min" }, default_increment: 0.05,
+    set_size: { value: 5, unit: "min" },
   });
   // set_size 가 위젯에 표시되니 라벨 중복 → 정리
   const r = await call(data, "update_routine_state", { slug: "rg", display_name: "RowErg" });

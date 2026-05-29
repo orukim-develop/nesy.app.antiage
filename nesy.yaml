@@ -16,39 +16,36 @@ tools:
 
   - name: define_routine_exercise
     description: |
-      progressive overload 추적 대상 운동을 등록한다.
-      progression 으로 어떤 축으로 진척을 추적할지 선택:
-        weight — 무게 증가가 진척 (스쿼트, 벤치프레스, 머신, isolation 등)
-        time — 시간 단축이 진척 (4km 기어가기 10분→3분, 5km 러닝 30분→25분 등). 낮을수록 좋음
-        distance — 시간 고정·거리 증가가 진척 (1시간 RowErg 12500m→13000m, 30분 자전거 등)
-        reps — 횟수 증가가 진척 (1세트 푸시업 max reps, 풀업 max 등 자체중)
-        hold — 유지 시간 증가가 진척 (플랭크, L-sit, 데드행 등)
+      한 운동을 "어떤 값으로 기록하고 추이를 보여줄지" 등록한다. 마도서는 다음 목표·증량을 계산/추천하지 않는다 — 기록과 추이 표시 전용.
+      progression 으로 어떤 값으로 추이를 보여줄지 + 어느 방향이 '진전'인지 선택 (표시 방향용):
+        weight — 무게 (스쿼트, 벤치프레스, 머신, isolation 등). 클수록 진전으로 표시
+        time — 시간 (4km 기어가기 10분→3분, 5km 러닝 30분→25분 등). 낮을수록 진전으로 표시
+        distance — 거리/속도 (1시간 RowErg 12500m→13000m, 트레드밀 속도 등). 클수록 진전으로 표시
+        reps — 횟수 (1세트 푸시업 max reps, 풀업 max 등 자체중). 클수록 진전으로 표시
+        hold — 유지 시간 (플랭크, L-sit, 데드행 등). 클수록 진전으로 표시
       표준 인체 가정 금지 — 다리/팔이 없거나 의수·의족 사용자도 본인이 할 수 있는 형태(예 "기어가기", "한팔 푸시업")를 progression 에 맞게 등록 가능.
       같은 slug 는 덮어쓴다. AI 는 사용자와 합의된 운동만 등록 — 임의 등록 금지.
 
-      category 는 progression=weight 일 때만 의미: compound=다관절 → 기본 증분 2.5kg, isolation=단관절 → 1.25kg.
-      compound 의 경우 fact:exercise:min_plate_increment_kg 가 등록되어 있으면 그 값이 우선.
-      비무게 progression 의 기본 증분: time 30(초 가정) / distance 100(m 가정) / reps 1 / hold 5(초 가정). default_increment 로 덮어쓸 수 있음.
+      category — 선택. progression=weight 일 때 compound/isolation 분류 라벨 (표시용). 마도서가 이 값으로 증량을 정해주지 않는다.
 
-      계획된 세트·횟수(target_sets, target_reps, target_reps_min/max):
+      계획된 세트·횟수(target_sets, target_reps, target_reps_min/max) — 사용자가 스스로 정한 계획을 기록만 한다 (마도서가 정해주지 않음):
         target_sets — 계획 세트 수. 생략 시 progression 별 기본 (weight/reps/hold=3, time/distance=1).
-        target_reps — 계획 고정 횟수 (예 5x5 의 5). progression=weight 또는 reps 에 자연스럽지만 다른 progression 에도 허용.
+        target_reps — 계획 고정 횟수 (예 5x5 의 5).
         target_reps_min / target_reps_max — 계획 횟수 범위 (예 8~12). target_reps 가 같이 들어오면 무시(고정값 우선).
-        모두 선택값 — 축구·테니스·등산 등도 사용자가 루틴 추적 원하면 등록 가능 (progression=time 또는 distance 자연스러움). 비-rep 진척에서는 target_reps 미설정 자연스러움.
+        모두 선택값 — 축구·테니스·등산 등도 사용자가 기록 원하면 등록 가능.
 
       set_size — 1세트의 고정 크기 ({ value, unit }, 선택). 진척 축(working_value)과 분리되는 "세트당 크기".
-        용도: 카디오 인터벌·격투 라운드처럼 1세트의 크기는 고정이고 진척은 다른 축(속도·페이스·횟수)으로 추적할 때.
-        예 트레드밀 9km/h × 1분 × 20세트 → set_size={value:1, unit:"min"}, progression=distance, working_value=9, target_sets=20, default_increment=0.5
-        예 RowErg 2:25 페이스 × 5분 1세트 → set_size={value:5, unit:"min"}, progression=time, working_value=2.4167, target_sets=1, default_increment=0.05
-        예 태권도 3분 3라운드 발차기 20번 → set_size={value:3, unit:"min"}, progression=reps, working_value=20, target_sets=3, target_reps=20, default_increment=2
+        용도: 카디오 인터벌·격투 라운드처럼 1세트의 크기는 고정이고 추이는 다른 축(속도·페이스·횟수)으로 볼 때.
+        예 트레드밀 9km/h × 1분 × 20세트 → set_size={value:1, unit:"min"}, progression=distance, working_value=9, target_sets=20
+        예 RowErg 2:25 페이스 × 5분 1세트 → set_size={value:5, unit:"min"}, progression=time, working_value=2.4167, target_sets=1
+        예 태권도 3분 3라운드 발차기 20번 → set_size={value:3, unit:"min"}, progression=reps, working_value=20, target_sets=3, target_reps=20
         스트렝스 루틴(벤치프레스 등 reps 가 가변)에는 보통 생략. 생략 시 null.
         unit 은 자유 문자열(20자 이내). value 는 0 초과 숫자.
-        ★ set_size 사용 시 default_increment 도 반드시 같이 등록 — 카디오 unit (km/h, min/500m 등) 의 기본 증분이 progression 표준값과 안 맞음. 명시 안 하면 next_target 이 null 을 반환하고 사용자에게 다시 묻도록 fail-safe 발동.
 
-      working_value — '공식' 현재 능력치. next_target 의 base. 등록 시 초기값 선택 가능. 이후 update_routine_state 로만 갱신. 코드는 자동 갱신 X — 매 세션 후 next_target.working_value_recommendation 보고 AI 가 사용자에게 권유.
-      memo — AI 가 매 계획 시 읽고 반영하는 자유 메모. 예 '이 머신 무게 단위 7kg' (→ default_increment 도 같이 7), '어깨 부상 회복 중 — 더 증량 X' (→ RPE 낮아도 증량 보류), '8월까지 디로드 위주'. 메모 우선.
+      working_value — 사용자가 스스로 밝힌 '현재 능력치' (기록·표시 전용). 등록 시 초기값 선택 가능. 이후 update_routine_state 로만, 사용자가 '현재 능력치를 X 로' 라고 명시할 때만 갱신. 마도서가 자동 갱신하거나 갱신을 권하지 않는다.
+      memo — AI 가 계획·표시에 참고하는 자유 메모. 예 '이 머신 무게 단위 7kg', '어깨 부상 회복 중', '8월까지 가볍게'. 코드는 파싱 안 함 — 그대로 보관·표시.
 
-      4단계 사이클: ① define_routine_exercise (등록) → ② define_split_plan (묶음, 선택) → ③ log_routine_session (실행) → ④ next_session_goal 자동 stash (코드가 알아서). AI 는 다음 세션 계획 시 routine.next_session_goal 그대로 사용 — next_target 재호출 불필요 (memo 변경·새 정보·null 시만 재계산).
+      흐름: ① define_routine_exercise (등록) → ② define_split_plan (묶음, 선택) → ③ log_routine_session (실행 기록). 다음 목표는 마도서가 계산하지 않는다 — 사용자가 '다음엔 X' 라고 스스로 말하면 update_routine_state 의 next_session_goal 에 그대로 기록만 한다.
     inputSchema:
       type: object
       properties:
@@ -66,16 +63,7 @@ tools:
           description: "값의 단위. weight: kg/lb. time: seconds/minutes. distance: meters/km. reps: reps. hold: seconds."
         category:
           type: string
-          description: "선택. progression=weight 일 때만 의미 — compound 또는 isolation. 기본 증분 단위에 영향."
-        default_rpe_target:
-          type: number
-          description: "선택. 다음 세트 '힘들었음 점수' 목표 (1~10, 높을수록 힘듦). 보통 7~9. 생략 시 8. AI 는 사용자에게 RPE 용어 말고 '힘들었음 점수' 로 묻기."
-        default_increment:
-          type: number
-          description: "선택. 다음 추천 시 증감 단위. 생략 시 progression+category 기준 기본값 적용."
-        weekly_cap:
-          type: number
-          description: "선택. 주당 최대 진척 누계 (routine.unit 기준). 과도한 진척 방지용."
+          description: "선택. progression=weight 일 때 compound 또는 isolation 분류 라벨 (표시용)."
         target_sets:
           type: integer
           description: "선택. 계획 세트 수 (1+). 생략 시 progression 별 기본 — weight/reps/hold=3, time/distance=1."
@@ -90,17 +78,16 @@ tools:
           description: "선택. 계획 횟수 범위 상한 (target_reps_min 이상)."
         working_value:
           type: number
-          description: "선택. 사용자가 정상적으로 다루는 운동값 (스쿼트 100kg, 5km 25분 같은 '공식' 현재 능력치). 등록 시 초기 설정 가능. 이후 update_routine_state 로 갱신. next_target 계산의 base 가 됨 — 없으면 직전 본세트 평균이 fallback."
+          description: "선택. 사용자가 스스로 밝힌 '현재 능력치' (스쿼트 100kg, 5km 25분 등). 기록·표시 전용. 등록 시 초기 설정 가능. 이후 update_routine_state 로, 사용자가 명시할 때만 갱신."
         memo:
           type: string
-          description: "선택. AI 가 매 운동 계획 시 읽고 반영하는 자유 메모 (0~1000자). 예 '이 머신 무게 단위 7kg', '어깨 부상 회복 중 — 더 증량 X', '8월까지 디로드 위주'. 코드는 파싱 안 함 — AI 가 해석해 행동에 반영."
+          description: "선택. 자유 메모 (0~1000자). 예 '이 머신 무게 단위 7kg', '어깨 부상 회복 중', '8월까지 가볍게'. 코드는 파싱 안 함 — 그대로 보관·표시."
         set_size:
           type: object
           description: |
             선택. 1세트의 고정 크기 (카디오 인터벌·격투 라운드 등). 진척 축(working_value)과 분리.
             예 트레드밀 1분/세트 → { value: 1, unit: "min" } / 태권도 3분/라운드 → { value: 3, unit: "min" } / RowErg 5분/세트 → { value: 5, unit: "min" }.
             스트렝스(reps 가변) 루틴에는 보통 생략. unit 은 자유 문자열(예 'min', 'sec', 'm', 'km').
-            ★ 사용 시 default_increment 도 반드시 같이 등록 — 안 하면 next_target 이 fail-safe 로 null 반환.
           properties:
             value:
               type: number
@@ -112,23 +99,22 @@ tools:
 
   - name: log_routine_session
     description: |
-      루틴 운동의 한 세션(여러 세트 묶음)을 기록한다.
-      각 세트 구조는 routine.progression 에 따라 다름:
-        weight: { reps, weight, rpe, is_warmup? }
-        time: { time, rpe, is_warmup? }
-        distance: { distance, rpe, is_warmup? }
-        reps: { reps, rpe, is_warmup? }
-        hold: { hold, rpe, is_warmup? }
-      rpe 는 1~10 '힘들었음 점수' (높을수록 힘듦). 0 도 허용(전혀 힘들지 않음).
+      루틴 운동의 한 세션(여러 세트 묶음)을 기록한다. 기록 전용 — 마도서는 다음 목표·증량을 계산하지 않는다.
+      각 세트 구조는 routine.progression 에 따라 다름 (rpe 는 선택):
+        weight: { reps, weight, rpe?, is_warmup? }
+        time: { time, rpe?, is_warmup? }
+        distance: { distance, rpe?, is_warmup? }
+        reps: { reps, rpe?, is_warmup? }
+        hold: { hold, rpe?, is_warmup? }
+      rpe 는 선택 — 1~10 '힘들었음 점수' (높을수록 힘듦). 사용자가 스스로 말한 경우에만 기록.
 
-      progression 추론과 분리되는 3가지 케이스 — 다음 추천(next_target) 계산엔 영향 안 줌:
-        1) 워밍업 세트: 각 세트의 is_warmup=true 로 표시. 추론에서 자동 제외(이력엔 남음).
-        2) 디로드 세션 (컨디션 안 좋아 그날만 무게↓): is_deload=true. 세션 통째로 추론 제외 + weekly_cap 누계에서도 제외.
-        3) 슈퍼셋/자이언트셋 (여러 운동을 한 묶음으로): superset_group 에 같은 키 부여하고 묶을 각 routine 의 log_routine_session 을 같은 키로 호출. 묶음 메타데이터일 뿐, 각 routine progression 은 독립 추론.
+      세트 분류 라벨 (기록·표시용):
+        1) 워밍업 세트: is_warmup=true 로 표시. 추이 표시에서 본세트와 구분.
+        2) 디로드 세션 (그날만 가볍게): is_deload=true. 세션 통째로 '디로드'로 표시.
+        3) 슈퍼셋/자이언트셋 (여러 운동을 한 묶음으로): superset_group 에 같은 키 부여해 묶음 표시. 묶을 각 routine 의 log_routine_session 을 같은 키로 호출.
 
       AI 는 사용자에게 'is_warmup' / 'is_deload' / 'superset_group' 같은 코드값 노출 금지 — 사용자 발화 언어로 합의 후 내부적으로 변환.
-      반환: 저장 결과 + 다음 세션 추천값(next_recommendation) + next_session_goal_updated boolean.
-      자동 stash — 디로드 아니고 next_target 이 valid 면 routine.next_session_goal 에 자동 저장 (source='auto'). 디로드 직후는 갱신 X (기존 stash 유지). 다음 세션 계획 시 next_target 재호출 불필요.
+      반환: { saved } 저장 결과만. 다음 목표를 자동으로 정하지 않는다 — 사용자가 '다음엔 X' 라고 스스로 말하면 update_routine_state 의 next_session_goal 에 기록.
     inputSchema:
       type: object
       properties:
@@ -154,10 +140,10 @@ tools:
 
   - name: log_activity
     description: |
-      progressive overload 대상이 아닌 자유 활동을 기록한다 (산책, 등산, 풋살, 가벼운 자전거 등).
-      성장 추적이 아니라 활동량 로깅용 — name + intensity + duration_minutes 만 받음.
-      만약 사용자가 "이거 진척 추적해줘" 라고 하면 log_activity 대신 define_routine_exercise (progression 적절히 선택) 으로 등록.
-      kcal 추정은 마도서가 안 함 — AI 가 강도×시간×체중으로 보조 추정.
+      루틴(progression 추이) 대상이 아닌 자유 활동을 기록한다 (산책, 등산, 풋살, 가벼운 자전거 등).
+      활동량 로깅용 — name + intensity + duration_minutes 만 받음.
+      만약 사용자가 "이거 추이 보고 싶어" 라고 하면 log_activity 대신 define_routine_exercise (progression 적절히 선택) 으로 등록.
+      마도서는 kcal·강도를 추정/해석하지 않는다 — 사용자가 말한 활동명·강도·시간을 그대로 기록.
     inputSchema:
       type: object
       properties:
@@ -184,10 +170,8 @@ tools:
       체성분 추적은 body_weight_kg / body_fat_pct / skeletal_muscle_kg,
       고혈압은 systolic_bp / diastolic_bp / resting_hr —
       사람마다 다른 슬러그. AI 는 goal 을 읽고 합의된 지표만 등록 (임의 등록 금지).
-      target_min/max 는 선택 — 정확한 정상범위 알 때만, 모르면 생략.
-      priority=critical 은 위젯/요약에서 상위 표시 + 범위 이탈 시 강조.
-
-      참고: 기초대사량(BMR)·나이는 별도 지표 등록 불필요 — height_cm/sex/birth_year 설정 + body_weight_kg 측정이 있으면 Mifflin-St Jeor 로 자동 계산되어 get_state.derived 에 포함.
+      target_min/max 는 선택 — 사용자가 본인 기준 범위를 직접 알려줄 때만 기록 (마도서가 정상범위를 정하지 않는다). 모르면 생략.
+      priority=critical 은 위젯/요약에서 상위 표시 + 사용자가 정한 범위를 벗어나면 강조 표시.
     inputSchema:
       type: object
       properties:
@@ -214,8 +198,8 @@ tools:
   - name: record_metric
     description: |
       등록된 지표의 측정값 한 건을 기록한다.
-      반환에 target 범위 평가 + 직전값 대비 변화 + 7일 평균 대비 변화 포함.
-      AI 는 이 평가에 근거해서만 응답하되, 의학적 진단·처방 흉내는 금지.
+      반환에 사용자가 정한 범위 대비 위치 + 직전값 대비 변화 + 7일 평균 대비 변화 (사실·추이만).
+      마도서 이름으로 의학적 진단·처방·해석을 하지 않는다. AI 가 의견을 말하려면 '마도서 기록이 아니라 제(AI) 개인 판단'이라고 분리해 밝히고 전문가 상담도 함께 권한다.
     inputSchema:
       type: object
       properties:
@@ -233,7 +217,7 @@ tools:
 
   - name: log_meal
     description: |
-      끼 한 건을 기록·수정·프리셋 등록·프리셋 호출을 모두 처리하는 통합 도구.
+      끼 한 건을 기록·수정·프리셋 등록·프리셋 호출을 모두 처리하는 통합 도구. 먹은 것을 기록만 한다 — 마도서가 식단을 짜거나 적정 섭취량을 추천하지 않는다.
 
       4가지 모드 (조합 가능):
         ① 신규 등록 — id 생략, name 필수, 영양 필드 선택.
@@ -241,10 +225,10 @@ tools:
         ③ 프리셋 등록 — as_preset_slug 와 함께 호출 시 끼 기록 + 프리셋 동시 저장 (meal_preset:{slug} 키). 같은 slug 면 덮어쓰기. AI 는 사용자 합의 후에만.
         ④ 프리셋 호출 — from_preset_slug 와 함께 호출 시 프리셋의 영양값을 기본값으로 사용. 호출 args 가 명시한 값은 override 우선. name 도 생략 가능 (프리셋 name 사용).
 
-      영양 필드(kcal/protein_g/carbs_g/fat_g)는 모두 선택 — AI 가 사용자 발화에서 추정/보조.
-      activity_factor>0 이고 BMR 자동 계산 조건(height_cm>0, sex≠unspecified, birth_year>0, body_weight_kg 측정 1건 이상)을 모두 충족하면 maintenance 비교(today_delta_kcal)도 포함.
+      영양 필드(kcal/protein_g/carbs_g/fat_g)는 모두 선택 — 사용자가 알려준 값만 기록, 모르면 비워둠.
+      사용자가 직접 정한 daily_kcal_reference(하루 기준 칼로리)가 있으면 오늘 합계와의 차이(today_delta_kcal)도 함께 반환 — 단순 비교 표시용. 마도서가 적정량을 계산/추천하지 않는다.
 
-      반환 { saved, id, today_totals, maintenance, preset_used, preset_saved }. id/slug 사용자 노출 금지.
+      반환 { saved, id, today_totals, daily_kcal_reference, today_delta_kcal, preset_used, preset_saved }. id/slug 사용자 노출 금지.
     inputSchema:
       type: object
       properties:
@@ -327,7 +311,7 @@ tools:
       마도서가 사전에 정의할 수 없는 정보(헬스장 장비/바 무게, 의수·의족, 알레르기, 복용약, 식단 제약, 직업·수면 등) 를 AI 가 분류해서 적재한다.
 
       축:
-        exercise — 운동 환경/장비/제약. 예: 최소 plate 증분 (slug `min_plate_increment_kg`, value `{ v: 2.5 }` — next_target 이 이 값을 increment 로 자동 사용), 사용 가능한 기구 목록, 왼팔 의족 등 신체적 제한
+        exercise — 운동 환경/장비/제약. 예: 헬스장 최소 plate 증분 (slug `min_plate_increment_kg`, value `{ v: 2.5 }`), 사용 가능한 기구 목록, 왼팔 의족 등 신체적 제한
         health_metric — 알레르기, 복용 약물, 만성질환, 가족력
         diet_reminder — 식단 제약(비건/저탄수/케토), 카페인·알코올 한도, 단식 윈도우
         baseline — 변하지 않거나 천천히 변하는 본인 정보. 직업, 평균 수면 시간, 흡연·음주 상태, 거주 도시
@@ -344,7 +328,7 @@ tools:
         3. 사용자 합의를 받은 뒤에만 호출
         4. 축이 모호하면 두 선택지를 사용자 언어로 풀어서 직접 질문 — AI 단독 결정 금지
 
-      value 는 항상 object 로 저장. 스칼라(숫자/문자열/불린)는 `{ v: 값 }` 으로 감싼다 — next_target 등 마도서 내부 로직이 v 키를 기대.
+      value 는 항상 object 로 저장. 스칼라(숫자/문자열/불린)는 `{ v: 값 }` 으로 감싼다 — 일관된 형식 유지용.
       목록은 `{ items: [...] }`, 구조체는 자유 키.
       같은 (axis, slug) 면 덮어쓴다.
     inputSchema:
@@ -412,15 +396,15 @@ tools:
 
   - name: update_routine_state
     description: |
-      등록된 routine 의 비-구조 필드(추적 상태·계획·메모)를 부분 업데이트한다 (patch).
+      등록된 routine 의 비-구조 필드(현재 능력치·계획·메모·다음 목표)를 부분 업데이트한다 (patch). 기록 전용.
       같은 slug 의 routine 이 이미 있어야 함. 제공된 필드만 덮어쓰고, 생략한 필드는 그대로 유지.
-      필드를 명시적으로 클리어하려면 null 로 명시 (예 working_value: null 로 워킹밸류 리셋, memo: null 또는 "" 로 메모 삭제).
+      필드를 명시적으로 클리어하려면 null 로 명시 (예 working_value: null, memo: null 또는 "").
 
       display_name — 사용자에게 보일 라벨만 변경 (구조 영향 X). set_size 추가 시 라벨에 같은 정보(분/세트 시간 등) 중복이면 정리. 예 'RowErg (5분짜리)' → 'RowErg'. 1~200자.
-      working_value — 사용자가 정상적으로 다루는 운동값. 매 세션 후 next_target.working_value_recommendation 보고 직전 본세트 평균과 다르면 AI 가 사용자에게 업데이트 권유 → 합의 시 호출.
-      memo — AI 가 매 계획 시 읽고 반영하는 자유 메모 (0~1000자). 예 '이 머신 무게 단위 7kg' → AI 가 default_increment 도 같이 7 로 업데이트 / '더 증량 X' → AI 가 push_multiplier 무시하고 유지 권장.
-      next_session_goal — 다음 세션 목표 수동 지정 ({ value, note? }). 사용자가 '다음엔 무조건 100kg' 같이 직접 의지를 표현했을 때만 사용. source 가 자동으로 'manual' 로 마크. log_routine_session 의 자동 stash 가 이후 덮어씀.
-      default_increment / default_rpe_target / weekly_cap / target_sets / target_reps / target_reps_min / target_reps_max — 계획 조정.
+      working_value — 사용자가 스스로 밝힌 '현재 능력치'. 사용자가 '현재 능력치를 X 로' 라고 명시할 때만 갱신. 마도서가 갱신을 권하거나 자동 갱신하지 않는다.
+      memo — 자유 메모 (0~1000자). 예 '이 머신 무게 단위 7kg', '어깨 부상 회복 중'. 코드는 파싱 안 함 — 그대로 보관·표시.
+      next_session_goal — 다음 세션 목표를 사용자가 직접 지정 ({ value, note? }). 사용자가 '다음엔 100kg 해볼래' 같이 스스로 표현했을 때만 사용. source 는 'manual' 로 마크. 마도서가 자동으로 채우지 않는다.
+      target_sets / target_reps / target_reps_min / target_reps_max — 사용자가 정한 계획 조정.
       set_size — 1세트 고정 크기 ({value, unit}). null 로 클리어. 보통 등록 시점에 정함 — 운영 중 변경은 드뭄.
 
       구조 변경 (progression / unit / category) 이 필요하면 define_routine_exercise 재호출 — 그 경우 working_value/memo 도 같이 다시 명시해야 보존됨.
@@ -435,19 +419,10 @@ tools:
           description: "선택. 라벨 새 값 (1~200자). set_size 추가/변경 시 라벨 중복 정리에 사용 — 예 'RowErg (5분짜리)' → 'RowErg'."
         working_value:
           type: number
-          description: "선택. 워킹밸류 새 값 (0 이상). null 로 명시하면 클리어."
+          description: "선택. 사용자가 밝힌 '현재 능력치' 새 값 (0 이상). null 로 명시하면 클리어."
         memo:
           type: string
           description: "선택. 메모 새 값 (0~1000자). null 또는 빈 문자열로 클리어."
-        default_increment:
-          type: number
-          description: "선택. 다음 추천 증감 단위 (0 초과). null 로 명시하면 progression 기본값으로 되돌림."
-        default_rpe_target:
-          type: number
-          description: "선택. '힘들었음 점수' 목표 (1~10)."
-        weekly_cap:
-          type: number
-          description: "선택. 주당 진척 누계 상한. null 로 명시하면 해제."
         target_sets:
           type: integer
           description: "선택. 계획 세트수 (1 이상)."
@@ -464,8 +439,7 @@ tools:
           type: object
           description: |
             선택. 다음 세션 목표를 사용자가 직접 지정. { value: number, note?: string(0~200자) }.
-            null 로 명시하면 클리어 (다음 log_routine_session 때 자동 다시 채워짐).
-            source 는 자동으로 'manual' 로 마크 — 이후 log_routine_session 의 자동 stash 가 덮어씀.
+            null 로 명시하면 클리어. source 는 'manual' 로 마크. 마도서가 자동으로 채우거나 덮어쓰지 않는다.
           properties:
             value:
               type: number
@@ -493,7 +467,7 @@ tools:
           session → routines[].last_session.id ('session:slug:...')
           activity → recent_activities[].id ('activity:...')
 
-      session 삭제 시 부수 효과: 해당 routine 의 next_session_goal 이 자동으로 재계산되어 stale stash 방지 (응답에 side_effect.recomputed_next_session_goal_for 또는 cleared_next_session_goal_for 포함). 메모리 오염 방지.
+      session 삭제는 그 기록만 지운다 — 사용자가 직접 정한 next_session_goal 은 건드리지 않는다 (재계산/클리어 없음).
 
       끼니(meal) 의 단순 수정(name/kcal/macro 등 값만 변경)은 delete 대신 log_meal({id:..., ...새 값}) upsert 사용 — 단순. delete 는 진짜로 없애야 할 때만.
       id 는 사용자에게 절대 노출 금지 — AI 가 내부에서 get_state 조회 후 사용.
@@ -513,17 +487,16 @@ tools:
 
   - name: get_state
     description: |
-      마도서의 현재 상태를 통째로 반환한다 — 응답·추천에 앞서 반드시 호출.
+      마도서의 현재 상태를 통째로 반환한다 — 응답에 앞서 반드시 호출. 기록·시각화 전용이라 어떤 추천값도 계산하지 않는다.
       반환:
         - protocol_step: 'awaiting_goal' / 'awaiting_initial_setup' / 'operational'
-        - ai_rules: AI 가 매 응답마다 지켜야 할 규약 (빈 추론 금지, 시각은 timezone 기준, 의학적 진단 흉내 금지, user_fact 축 합의 절차, RPE 는 '힘들었음 점수' 로 묻기 등)
+        - ai_rules: AI 가 매 응답마다 지켜야 할 규약 (마도서 이름으로 의학·식이·운동 조언/추천/식단작성 금지, 조언은 AI 본인 판단으로 분리 표시, 빈 추론 금지, 시각은 timezone 기준, user_fact 축 합의 절차 등)
         - recommended_next_action: 현 단계에서 AI 가 다음으로 해야 할 행동의 짧은 힌트
         - goal: { text, updated_at } 또는 null
-        - settings: { timezone, activity_factor, height_cm, sex, birth_year }
+        - settings: { timezone, daily_kcal_reference }
         - server_now / server_now_local: 추측 금지용 서버 기준 시각
-        - derived: { age, bmr, bmr_source, maintenance_kcal } — settings + 최근 body_weight_kg 로 자동 계산 (조건 불충족 필드는 null)
-        - metrics: 등록 지표들 + 각각의 최근 측정값(latest_id 포함) + target 평가 + 7일 평균 + 샘플 수
-        - routines: 등록 루틴들 + 각각의 progression + 최근 세션(last_session.id 포함) + progression_state ({ working_value, current_value, current_at, pr_value, pr_at, baseline_value, baseline_at, direction }) + memo + next_session_goal ({ value, computed_at, source: 'auto'|'manual', note })
+        - metrics: 등록 지표들 + 각각의 최근 측정값(latest_id 포함) + 사용자가 정한 범위 대비 위치 + 7일 평균 + 샘플 수
+        - routines: 등록 루틴들 + 각각의 progression + 최근 세션(last_session.id 포함) + progression_state ({ working_value, current_value, current_at, pr_value, pr_at, baseline_value, baseline_at, direction }) + memo + next_session_goal ({ value, computed_at, source: 'manual', note })
         - recent_activities: 최근 7일 비루틴 활동 (각 항목에 id 포함 — delete_entity 용)
         - meals_today: 오늘(timezone 기준) 끼 합계 + 항목 (items[].id — log_meal upsert / delete_entity 용)
         - meal_presets: 등록된 끼 프리셋 [{slug, name, kcal, protein_g, carbs_g, fat_g, defined_at}]. slug 는 log_meal({from_preset_slug}) 또는 delete_entity({kind:'meal_preset', id:slug}) 에 사용. 사용자에게 slug 노출 금지 — name 으로 자연어 표현.
@@ -533,52 +506,15 @@ tools:
         - active_split_plan: 활성 plan + today_bucket(weekly) 또는 next_bucket_hint(sequence). 없으면 null.
       list_* 함수 대신 이 함수가 모든 조회를 커버한다.
 
-  - name: next_target
-    description: |
-      특정 루틴 운동의 다음 세션 추천값을 계산해서 반환한다 — progression 축에 맞게.
-      base 는 routine.working_value (등록된 능력치) 가 있으면 그 값, 없으면 직전 비-디로드 세션의 본세트 평균.
-      직전 세션의 평균 RPE('힘들었음 점수') 와 default_rpe_target 비교 → progression+category 기준 단위로 증감.
-      기본 increment: weight+compound 2.5 / weight+isolation 1.25 / time 30 / distance 100 / reps 1 / hold 5. routine.default_increment 로 덮어쓸 수 있음.
-      weight+compound: fact:exercise:min_plate_increment_kg (value.v) 가 있으면 그 값으로 대체.
-      progression=time 은 방향 반전(낮을수록 좋음) — 쉽다면 더 빠른 목표.
-      weekly_cap 가 설정되어 있으면 최근 7일 진척 누계가 cap 을 넘지 않도록 보호.
-      반환에 working_value_recommendation 포함 — { current_working_value, last_session_avg, diff, suggested_new_value, recommend_update, reason }. recommend_update=true 면 AI 가 사용자에게 working_value 갱신 권유 후 update_routine_state 호출. 자동 갱신 X.
-      세션 기록이 없으면서 working_value 도 없으면 next_target=null + reason 반환. working_value 만 있으면 그 값을 시작점으로 제안.
-    inputSchema:
-      type: object
-      properties:
-        slug:
-          type: string
-      required: [slug]
-
-  - name: suggest_setup
-    description: |
-      goal 문장에 자주 동반되는 검증된 초기 셋업 템플릿을 반환한다 — '추천'이 아닌 '템플릿 사전'.
-      예: goal 에 '당뇨' → fasting_glucose/post_meal_glucose/hba1c 지표 + 아침 공복 혈당 측정 알람 같은 표준 묶음.
-      반환된 템플릿은 AI 가 사용자에게 그대로 제시 → 사용자 합의 → define_metric / define_reminder / define_routine_exercise / define_user_fact 로 실제 등록.
-      마도서가 임의 등록하지 않는다 — 호출 결과는 단순 후보일 뿐.
-
 user_settings:
   - key: timezone
     type: string
     default: "Asia/Seoul"
     description: "IANA timezone. 알람 시각·오늘 날짜 판단 기준. 예 Asia/Seoul / America/Los_Angeles."
-  - key: activity_factor
+  - key: daily_kcal_reference
     type: number
     default: 0
-    description: "BMR 곱셈 계수 (1.2~1.9). 0 = 합의 전(비활성). >0 이고 BMR 자동 계산 조건 충족 시 식단 maintenance 비교 자동 활성."
-  - key: height_cm
-    type: number
-    default: 0
-    description: "신장 cm. 0 = 미설정. BMR 자동 계산에 필요."
-  - key: sex
-    type: string
-    default: "unspecified"
-    description: "male / female / unspecified 중 하나. BMR 자동 계산(Mifflin-St Jeor)에 필요."
-  - key: birth_year
-    type: integer
-    default: 0
-    description: "출생년도(서기). 0 = 미설정. BMR 자동 계산 시 나이 산출에 필요."
+    description: "사용자가 직접 정한 '하루 기준 칼로리'. 0 = 미설정. 마도서가 계산하지 않는다 — 사용자가 알려준 값을 그대로 저장해, 오늘 섭취 합계와 비교 표시하는 용도일 뿐."
 
 notifications:
   function: check_reminders

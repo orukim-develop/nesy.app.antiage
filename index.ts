@@ -15,29 +15,28 @@ const SPLIT_KINDS = ["weekly", "sequence", "freestyle"] as const;
 const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 
 const AI_RULES = [
-  "응답·추천 전 반드시 get_state 호출.",
-  "goal 이 비어있으면 set_goal 부터.",
-  "사용자가 명시한 항목만 등록 — 임의 등록 금지.",
-  "빈 추론으로 추천 금지 — 사실(get_state 결과)에 근거.",
+  "★ 이 마도서는 '기록' 과 '한눈에 보기(시각화)' 전용이다. 마도서 이름으로 의학·식이·운동 조언/추천/처방/식단작성 절대 금지. 사용자가 적어달라고 한 사실만 적고, 현재 상태와 추이만 보여준다. 다음 무게·칼로리·식단·운동량을 마도서가 정해주지 않는다.",
+  "★ AI(너) 가 스스로 판단해 조언하려면 반드시 '여기서부터는 마도서 기록이 아니라 제(AI) 개인 판단입니다' 라고 분리해 밝힌 뒤 말한다. 마도서가 추천하는 것처럼 말하지 말 것. 의학적 내용은 전문가 상담도 함께 권한다.",
+  "응답 전 반드시 get_state 호출 — 모든 답변·표시는 get_state 의 기록된 사실에만 근거. 사실에 없는 값을 지어내지 말 것.",
+  "goal 이 비어있으면 set_goal 부터 — goal 은 사용자가 말한 목표 문장을 그대로 기록만 한다.",
+  "사용자가 명시적으로 말한 항목만 등록 — 임의 등록·임의 식단·임의 측정값 생성 절대 금지.",
   "시각·날짜는 settings.timezone 기준 — 추측 금지.",
-  "의학적 진단·처방 흉내 금지.",
-  "응답 전 goal 문장을 다시 읽고 사용자 발화와 정합성 검증.",
   "★ 사용자 앞 발화는 사용자 발화 언어 그대로의 자연어로. 한국어 화자면 한국어, 영어 화자면 영어, 다른 언어면 그 언어. slug, snake_case 식별자, JSON 키, 도구 이름(define_*/log_* 등), axis/progression/kind 의 영어 코드값(exercise/health_metric/weight/time/weekly 등) 절대 노출 금지. 도구 호출은 내부에서만, 사용자에겐 자연어 라벨/display_name 으로 풀어쓴다. 위반 시 사용자가 '코드처럼 말한다' 며 신뢰 잃음.",
   "user_fact 등록 전 사용자 발화 언어로 분류 의도 명시 후 합의 (영문 axis 값 노출 금지). 축 자연어 표현 예시 — 한국어: exercise='운동 환경/장비/제약', health_metric='건강 관련 정보(알레르기·복용약·만성질환 등)', diet_reminder='식단 제약/알람 관련', baseline='기본 정보(직업·수면·생활패턴 등)'. 영어: exercise='workout environment/equipment/constraints', health_metric='health-related info (allergies, meds, conditions)', diet_reminder='diet constraints / reminders', baseline='baseline info (job, sleep, lifestyle)'. 다른 언어는 의미 보존하며 그 언어로 자연 번역. 좋은 예(한): '이거 운동 환경 정보로 저장할게요 — 헬스장 최소 증분 2.5kg' / 좋은 예(영): 'Logging this as workout environment — gym minimum plate increment 2.5kg' / 나쁜 예: 'exercise 카테고리에 min_plate_increment_kg 으로 넣을게요'.",
   "축이 모호하면 두 선택지를 사용자 발화 언어로 풀어서 직접 질문 — AI 단독 결정 금지.",
-  "BMR 은 별도 metric 등록 불필요 — height_cm/sex/birth_year + body_weight_kg 측정으로 자동 계산되어 derived 에 들어옴.",
   "운동 등록 시 진척 축 사용자 발화 언어로 자연스럽게 합의 — 무게↑ / 시간↓ / 거리↑ / 횟수↑ / 유지시간↑ 중 어느 축인지 (한국어 예 '무게 늘리기 / 시간 줄이기 / 거리 늘리기 / 횟수 늘리기 / 유지 시간 늘리기', 영어 예 'add weight / cut time / extend distance / more reps / longer hold'). 'progression=weight' 같이 코드값 노출 금지. 표준 인체 가정 금지 — 다리/팔 없는 사용자도 본인이 가능한 형태(기어가기 등) 등록 가능.",
   "운동 등록 시 계획된 세트수·횟수(또는 범위) 사용자 발화 언어로 함께 합의 — 무게/횟수 진척이면 횟수도 같이(한국어 예 '3세트 5회' 또는 '3세트 8~12회 범위', 영어 예 '3 sets of 5 reps' 또는 '3 sets of 8-12 reps'), 시간/거리/유지시간 진척이면 세트수만 자연스럽게 (보통 1세트). 'target_sets=3' 같이 코드값 노출 금지. 사용자가 묻지 않으면 기본값 사용 OK.",
   "진척 추적 대상 vs 자유 활동 분류 모호하면 사용자 발화 언어로 직접 질문 (한국어 예 '이거 진척 추적할까요, 아니면 그냥 활동 기록만 할까요?', 영어 예 'Track this as progression, or just log it as an activity?'). 축구·테니스·등산 같은 스포츠는 보통 log_activity 가 자연스럽지만, 사용자가 '시간 늘리기' / '거리 늘리기' 같은 축으로 진척 추적 원하면 적절한 progression 으로 루틴 등록도 가능 — 사용자 의도 확인 후.",
   "RPE 는 1~10 (높을수록 힘듦) — 사용자에게는 RPE 용어 노출 금지, 사용자 언어로 풀어 묻기 (한국어 '힘들었음 점수', 영어 'how hard it felt (1-10)').",
-  "세션 기록 시 progression 추론과 분리되는 3가지 케이스 자동 인지 — (a) 워밍업 세트는 sets[].is_warmup=true (b) 컨디션 안 좋아 그날만 가볍게 한 디로드 세션은 is_deload=true (c) 여러 운동을 한 묶음으로 한 슈퍼셋/자이언트셋은 같은 superset_group 키 ('ss-<짧은랜덤>' 형식, AI 가 생성) 로 묶을 routine 들 각각 log_routine_session. 모두 next_target 추론에서 자동 제외/분리되어 운동 메모리(progression weight) 오염 안 됨. 사용자에게는 코드값/필드명 노출 금지, 사용자 발화 언어로 자연스럽게 확인 — 한국어 예 '앞 2세트는 워밍업으로 기록할까요?' / '오늘은 디로드 데이로 기록할게요 — progression 추적엔 영향 없어요' / '벤치+푸시업 슈퍼셋으로 묶을게요'. 영어 예 'Mark the first 2 sets as warmup?' / 'Logging today as a deload — won\\'t affect progression' / 'Grouping bench+pushup as a superset'.",
-  "★ 운동은 4단계 사이클 — ① 등록(define_routine_exercise) → ② 묶음(define_split_plan, 선택) → ③ 실행(log_routine_session) → ④ 비교+다음 목표(routine.next_session_goal). log_routine_session 직후 코드가 자동으로 next_target 계산해서 routine.next_session_goal 에 stash (디로드 세션 직후는 갱신 X, 기존 stash 유지). 다음 세션 계획 시 next_target 다시 호출 X — get_state.routines[].next_session_goal 그대로 사용. 단 (a) memo 가 바뀌었거나 (b) 사용자가 새 정보(부상·컨디션 등) 를 줬거나 (c) stash 가 null 이면 next_target 재호출. 사용자가 직접 '다음엔 무조건 X 도전' 같이 목표 지정하면 update_routine_state 의 next_session_goal patch (source=manual 로 자동 마크).",
-  "★ working_value 는 사용자의 '공식 현재 능력치' — next_target 계산의 base. 코드는 자동 갱신 X. 세션 기록 직후 next_target 호출 시 working_value_recommendation.recommend_update=true 가 뜨면 (예 '직전 본세트 평균이 working_value 보다 큼') 반드시 사용자에게 사용자 발화 언어로 묻고 합의 받은 뒤 update_routine_state 호출 — 한국어 예 '오늘 100kg 3세트 무난히 했어요. 현재 능력치를 100kg 으로 갱신할까요?' / 영어 예 'You handled 100kg × 3 cleanly today. Update your working value to 100kg?'. 합의 없이 자동 갱신 금지. 'working_value' 같은 영어 코드값 노출 금지 — '현재 능력치' / 'working value' / 'standard weight' 처럼 자연어로.",
-  "★ 운동 계획·다음 세트 추천 시 routine.memo 반드시 먼저 읽고 반영. 메모는 자유 텍스트 — AI 가 해석. 예 '이 머신은 7kg 단위로만 증량' 이면 next_target 그대로 쓰지 말고 7kg 배수로 라운드 + default_increment 도 7로 update_routine_state. '어깨 부상 회복 중 — 더 증량 X' 면 RPE 가 낮아도 증량 추천하지 말 것. '8월까지 디로드 위주' 면 is_deload 권장. 메모와 next_target 추천이 충돌하면 메모가 우선. 메모 등록/수정 시 코드값 노출 금지 — '루틴 메모' / 'routine memo' 처럼 자연어로 합의 후 update_routine_state 호출.",
+  "세션 기록 시 progression 추론과 분리되는 3가지 케이스 자동 인지 — (a) 워밍업 세트는 sets[].is_warmup=true (b) 컨디션 안 좋아 그날만 가볍게 한 디로드 세션은 is_deload=true (c) 여러 운동을 한 묶음으로 한 슈퍼셋/자이언트셋은 같은 superset_group 키 ('ss-<짧은랜덤>' 형식, AI 가 생성) 로 묶을 routine 들 각각 log_routine_session. 이 표시들은 추이(progression_state) 계산에서 자동 분리되어 운동 기록이 왜곡되지 않음. 사용자에게는 코드값/필드명 노출 금지, 사용자 발화 언어로 자연스럽게 확인 — 한국어 예 '앞 2세트는 워밍업으로 기록할까요?' / '오늘은 디로드 데이로 기록할게요 — progression 추적엔 영향 없어요' / '벤치+푸시업 슈퍼셋으로 묶을게요'. 영어 예 'Mark the first 2 sets as warmup?' / 'Logging today as a deload — won\\'t affect progression' / 'Grouping bench+pushup as a superset'.",
+  "운동 흐름 — ① 등록(define_routine_exercise) → ② 묶음(define_split_plan, 선택) → ③ 실행 기록(log_routine_session). 마도서는 다음 목표를 자동으로 계산·추천하지 않는다. 사용자가 스스로 '다음엔 X 해볼래' 라고 다음 목표를 말하면 그 말을 update_routine_state 의 next_session_goal 에 그대로 기록만 한다 (source=manual). 마도서가 다음 무게/시간/거리를 제안하지 말 것.",
+  "working_value(현재 능력치) 는 사용자가 스스로 밝힌 '현재 기준값' — 기록·표시 전용. 사용자가 '현재 능력치를 X 로 해줘' 라고 명시할 때만 update_routine_state 로 갱신. 마도서가 갱신을 권하거나 자동 갱신하지 않는다. 'working_value' 코드값 노출 금지 — '현재 능력치' 처럼 자연어로.",
+  "routine.memo 는 사용자가 남기는 자유 메모 — 기록·표시 전용. AI 가 메모를 근거로 증량·디로드·식단 같은 조언을 마도서 이름으로 하지 말 것 (조언이 필요하면 마도서 밖, AI 본인 판단으로 분리해 말한다). 메모 등록/수정은 '루틴 메모' 처럼 자연어 합의 후 update_routine_state.",
   "분할 등록 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 분할 등록 안 함.",
-  "★ 기록 수정/삭제 — 사용자가 '아까 등록한 점심 칼로리 잘못 적었어' / '방금 측정한 혈압 지워줘' / '오늘 운동 세션 잘못 입력' 같이 말하면, get_state 의 meals_today.items[].id / metrics[].latest_id / routines[].last_session.id / recent_activities[].id 로 해당 기록의 id 를 찾아 처리. 끼니(meal) 수정은 log_meal({id: 'meal:...', ...새 값}) 로 upsert — 단순. 그 외 기록(measure/session/activity) 수정은 delete_entity({kind, id}) 후 다시 log_* — 별도 update 도구 없음. session 삭제는 자동으로 해당 routine 의 next_session_goal 재계산되어 stale stash 방지. id 는 'meal:...' / 'measure:slug:...' / 'session:slug:...' / 'activity:...' 형식의 전체 key — 사용자에게 절대 노출 금지, 내부에서만 사용. 사용자에겐 자연어로 — 한국어 예 '아까 등록한 점심(450kcal) 을 600kcal 로 수정할게요' / 영어 예 'Updating the lunch you logged earlier (450 kcal) to 600 kcal'.",
+  "★ 기록 수정/삭제 — 사용자가 '아까 등록한 점심 칼로리 잘못 적었어' / '방금 측정한 혈압 지워줘' / '오늘 운동 세션 잘못 입력' 같이 말하면, get_state 의 meals_today.items[].id / metrics[].latest_id / routines[].last_session.id / recent_activities[].id 로 해당 기록의 id 를 찾아 처리. 끼니(meal) 수정은 log_meal({id: 'meal:...', ...새 값}) 로 upsert — 단순. 그 외 기록(measure/session/activity) 수정은 delete_entity({kind, id}) 후 다시 log_* — 별도 update 도구 없음. session 삭제는 해당 기록만 지운다. id 는 'meal:...' / 'measure:slug:...' / 'session:slug:...' / 'activity:...' 형식의 전체 key — 사용자에게 절대 노출 금지, 내부에서만 사용. 사용자에겐 자연어로 — 한국어 예 '아까 등록한 점심(450kcal) 을 600kcal 로 수정할게요' / 영어 예 'Updating the lunch you logged earlier (450 kcal) to 600 kcal'.",
   "★ 끼니 프리셋(meal_preset) — 사용자가 자주 먹는 끼를 한 번 정의해두고 다음에 빠르게 호출. 두 시점: (a) 등록: 사용자가 '이거 자주 먹어, 다음엔 빨리 등록하게 저장해줘' 같이 말하면 log_meal 호출 시 as_preset_slug 추가 — 끼 기록 + 프리셋 동시 저장. (b) 사용: get_state.meal_presets[] 에서 사용자 발화에 해당하는 프리셋 식별 후 log_meal({from_preset_slug: '...'}) — 영양값 자동 채움 (호출 args 가 명시한 값은 override 우선). 프리셋 slug 는 영문 snake_case 라 사용자 노출 금지 — 사용자에겐 프리셋 'name' 으로 합의. 한국어 예 '아침 정식(오트밀+그릭요거트, 400kcal) 으로 등록할게요' / 영어 예 'Logging breakfast as your usual oatmeal+greek yogurt (400 kcal)'. 프리셋 등록 전 반드시 사용자 합의 — 임의 등록 금지. 삭제는 delete_entity({kind:'meal_preset', id: slug}).",
-  "★ set_size — 1세트 고정 크기 (카디오 인터벌·격투 라운드 등). 진척 축(working_value) 과 분리되는 '세트당 크기'. 등록 시점에 반드시 default_increment 도 같이 합의 — 카디오 unit (예 km/h, min/500m) 은 기본 progression 증분(distance=100m, time=30s 등)과 의미가 달라서 default_increment 없으면 next_target 이 nonsense 값(예 9km/h + 100 = 109km/h) 을 낼 수 있음. 코드도 fail-safe — set_size 있고 default_increment 가 null 이면 next_target=null 반환 (사용자에게 다시 묻기). 사용자에게 코드값 노출 금지, 자연어로 — 한국어 예 '한 번에 얼마씩 올릴까요? 0.5km/h 정도?' / 영어 예 'How much per step up? 0.5km/h?'. 또 기존 routine 에 set_size 새로 추가하는 시점에는 display_name 에 같은 정보(분/세트 시간 등)가 박혀있는지 점검 — set_size 가 위젯에 '세트당 N{unit}' 으로 자동 표시되므로 라벨 중복이면 update_routine_state({slug, display_name: '...'}) 로 정리 권유. 예 'RowErg (5분짜리)' → 'RowErg'.",
+  "set_size — 1세트의 고정 크기(카디오 인터벌·격투 라운드 등) 를 기록·표시하기 위한 값 (예 '세트당 5분'). 위젯에 '세트당 N{unit}' 으로 표시됨. 사용자에게 코드값 노출 금지, 자연어로 합의. display_name 에 같은 정보(분/세트 시간)가 중복되면 update_routine_state 로 라벨 정리 권유 (예 'RowErg (5분짜리)' → 'RowErg').",
+  "칼로리 기준선은 마도서가 계산하지 않는다 (BMR·유지칼로리 산출 금지). 사용자가 직접 '내 하루 기준 칼로리는 X' 라고 정하면 설정값(daily_kcal_reference)으로 기록되어 오늘 섭취와 비교 표시될 뿐 — 적정량을 마도서가 추천하지 않는다.",
 ];
 
 export async function run({ input, data }: {
@@ -61,8 +60,6 @@ export async function run({ input, data }: {
     case "update_routine_state": return updateRoutineState(args, data);
     case "delete_entity": return deleteEntity(args, data);
     case "get_state": return getState(data);
-    case "next_target": return nextTarget(args, data);
-    case "suggest_setup": return suggestSetup(data);
     case "check_reminders": return checkReminders(data);
     case "render_dashboard": return renderDashboard(args, data);
     default: throw new Error(`알 수 없는 도구: ${tool}`);
@@ -71,13 +68,10 @@ export async function run({ input, data }: {
 
 async function getSettings(data: Data) {
   const s = await data.get("__settings");
-  const sex = typeof s?.sex === "string" && ["male", "female", "unspecified"].includes(s.sex) ? s.sex : "unspecified";
   return {
     timezone: (typeof s?.timezone === "string" && s.timezone) || "Asia/Seoul",
-    activity_factor: typeof s?.activity_factor === "number" ? s.activity_factor : 0,
-    height_cm: typeof s?.height_cm === "number" ? s.height_cm : 0,
-    sex,
-    birth_year: typeof s?.birth_year === "number" ? s.birth_year : 0,
+    // 사용자가 직접 정하는 하루 기준 칼로리 (선택). 마도서가 계산하지 않음 — 오늘 섭취와 비교 표시용.
+    daily_kcal_reference: typeof s?.daily_kcal_reference === "number" && s.daily_kcal_reference > 0 ? s.daily_kcal_reference : null,
   };
 }
 
@@ -125,50 +119,6 @@ function evalTarget(value: number, min: number | null, max: number | null): bool
   if (min !== null) return value >= min;
   if (max !== null) return value <= max;
   return null;
-}
-
-function computeMifflinStJeor(weight_kg: number, height_cm: number, age: number, sex: string): number | null {
-  if (!Number.isFinite(weight_kg) || weight_kg <= 0) return null;
-  if (!Number.isFinite(height_cm) || height_cm <= 0) return null;
-  if (!Number.isFinite(age) || age <= 0) return null;
-  if (sex !== "male" && sex !== "female") return null;
-  const base = 10 * weight_kg + 6.25 * height_cm - 5 * age;
-  return sex === "male" ? base + 5 : base - 161;
-}
-
-async function computeDerived(settings: any, data: Data) {
-  const currentYear = new Date().getFullYear();
-  const age = settings.birth_year > 0 ? currentYear - settings.birth_year : null;
-  const baseEmpty = { age, bmr: null, bmr_source: null, maintenance_kcal: null };
-
-  if (settings.height_cm <= 0) return baseEmpty;
-  if (age === null) return baseEmpty;
-  if (settings.sex !== "male" && settings.sex !== "female") return baseEmpty;
-
-  const measurements = (await data.list("measure:body_weight_kg:"))
-    .map(r => r.value).filter(nonNull)
-    .sort((a: any, b: any) => String(a.measured_at).localeCompare(String(b.measured_at)));
-  const latest: any = measurements.at(-1);
-  if (!latest) return baseEmpty;
-
-  const bmrRaw = computeMifflinStJeor(latest.value, settings.height_cm, age, settings.sex);
-  if (bmrRaw === null) return baseEmpty;
-  const bmr = Math.round(bmrRaw);
-  const maintenance_kcal = settings.activity_factor > 0 ? Math.round(bmr * settings.activity_factor) : null;
-
-  return {
-    age,
-    bmr,
-    bmr_source: {
-      formula: "Mifflin-St Jeor",
-      weight_kg: latest.value,
-      height_cm: settings.height_cm,
-      age,
-      sex: settings.sex,
-      measured_at: latest.measured_at,
-    },
-    maintenance_kcal,
-  };
 }
 
 async function setGoal(args: any, data: Data) {
@@ -269,9 +219,6 @@ async function defineRoutine(args: any, data: Data) {
 
   const routine = {
     slug, display_name, progression, unit, category,
-    default_rpe_target: typeof args.default_rpe_target === "number" ? args.default_rpe_target : 8,
-    default_increment: typeof args.default_increment === "number" ? args.default_increment : null,
-    weekly_cap: typeof args.weekly_cap === "number" ? args.weekly_cap : null,
     target_sets,
     target_reps,
     target_reps_min,
@@ -320,35 +267,6 @@ async function updateRoutineState(args: any, data: Data) {
       const m = String(args.memo);
       if (m.length > 1000) throw new Error("memo 는 1000자 이내.");
       patch.memo = m;
-    }
-  }
-
-  // default_increment: number | null
-  if ("default_increment" in args) {
-    if (args.default_increment === null) {
-      patch.default_increment = null;
-    } else {
-      const di = Number(args.default_increment);
-      if (!Number.isFinite(di) || di <= 0) throw new Error("default_increment 는 0 초과 숫자 또는 null.");
-      patch.default_increment = di;
-    }
-  }
-
-  // default_rpe_target: number (1~10)
-  if ("default_rpe_target" in args && args.default_rpe_target !== null) {
-    const t = Number(args.default_rpe_target);
-    if (!Number.isFinite(t) || t < 1 || t > 10) throw new Error("default_rpe_target 은 1~10.");
-    patch.default_rpe_target = t;
-  }
-
-  // weekly_cap: number | null
-  if ("weekly_cap" in args) {
-    if (args.weekly_cap === null) {
-      patch.weekly_cap = null;
-    } else {
-      const c = Number(args.weekly_cap);
-      if (!Number.isFinite(c) || c < 0) throw new Error("weekly_cap 은 0 이상 또는 null.");
-      patch.weekly_cap = c;
     }
   }
 
@@ -423,9 +341,14 @@ async function updateRoutineState(args: any, data: Data) {
 }
 
 function normalizeSet(s: any, progression: string): any {
-  const rpe = Number(s.rpe);
-  if (!Number.isFinite(rpe) || rpe < 0 || rpe > 10) {
-    throw new Error("각 세트의 rpe 는 0~10 사이 숫자 ('힘들었음 점수').");
+  // rpe('힘들었음 점수', 0~10) 는 선택 — 주면 기록만 한다. 마도서는 rpe 로 아무것도 추천/계산하지 않음.
+  let rpe: number | null = null;
+  if (s.rpe !== undefined && s.rpe !== null && s.rpe !== "") {
+    const r = Number(s.rpe);
+    if (!Number.isFinite(r) || r < 0 || r > 10) {
+      throw new Error("각 세트의 rpe 는 0~10 사이 숫자 ('힘들었음 점수'). 생략 가능.");
+    }
+    rpe = r;
   }
   const is_warmup = s.is_warmup === true;
   switch (progression) {
@@ -471,15 +394,6 @@ function setValue(s: any, progression: string): number {
   }
 }
 
-function defaultIncrement(progression: string, category: string | null): number {
-  if (progression === "weight") return category === "compound" ? 2.5 : 1.25;
-  if (progression === "time") return 30;
-  if (progression === "distance") return 100;
-  if (progression === "reps") return 1;
-  if (progression === "hold") return 5;
-  return 1;
-}
-
 async function logSession(args: any, data: Data) {
   const slug = String(args.slug ?? "");
   const routine = await data.get(`routine:${slug}`);
@@ -500,25 +414,9 @@ async function logSession(args: any, data: Data) {
   const session: any = { slug, sets: normalized, performed_at, progression, is_deload, superset_group };
   if (note) session.note = note;
   await data.set(`session:${slug}:${performed_at}:${shortRand()}`, session);
-  const next = await computeNextTarget(slug, data).catch((e: any) => ({ error: e.message }));
-
-  // 자동 stash — next_session_goal 갱신
-  // 디로드 세션 직후엔 갱신 X (직전 본세션 기준 유지). 워밍업만 있던 세션도 갱신 X.
-  // next.next_target 이 null 이면 (신호 부족) 갱신 X.
-  let next_session_goal_updated = false;
-  if (!is_deload && next && typeof (next as any).next_target === "number") {
-    const goal = {
-      value: (next as any).next_target,
-      computed_at: nowIso(),
-      source: "auto" as const,
-      note: null as string | null,
-    };
-    const updatedRoutine = { ...routine, next_session_goal: goal, updated_at: nowIso() };
-    await data.set(`routine:${slug}`, updatedRoutine);
-    next_session_goal_updated = true;
-  }
-
-  return { saved: session, next_recommendation: next, next_session_goal_updated };
+  // 마도서는 세션을 기록만 한다 — 다음 목표를 계산·추천하지 않음.
+  // (다음 목표는 사용자가 직접 말할 때만 update_routine_state 로 기록됨)
+  return { saved: session };
 }
 
 async function logActivity(args: any, data: Data) {
@@ -672,20 +570,13 @@ async function logMeal(args: any, data: Data) {
     fat_g: sumOrNull(todays.map((m: any) => m.fat_g)),
   };
 
-  let maintenance: any = null;
-  if (settings.activity_factor > 0) {
-    const derived = await computeDerived(settings, data);
-    if (derived.bmr !== null && derived.maintenance_kcal !== null) {
-      maintenance = {
-        bmr: derived.bmr,
-        bmr_source: derived.bmr_source,
-        activity_factor: settings.activity_factor,
-        maintenance_kcal: derived.maintenance_kcal,
-        today_delta_kcal: today_totals.kcal !== null ? today_totals.kcal - derived.maintenance_kcal : null,
-      };
-    }
-  }
-  return { saved: meal, id: key, today_totals, maintenance, preset_used: preset_used_slug, preset_saved };
+  // 칼로리 기준선은 사용자가 직접 설정한 값(daily_kcal_reference) — 마도서가 계산하지 않음.
+  // 기준이 있으면 오늘 섭취와의 차이를 사실로만 보여준다 (적정량 추천 X).
+  const daily_kcal_reference = settings.daily_kcal_reference;
+  const today_delta_kcal = (daily_kcal_reference !== null && today_totals.kcal !== null)
+    ? today_totals.kcal - daily_kcal_reference
+    : null;
+  return { saved: meal, id: key, today_totals, daily_kcal_reference, today_delta_kcal, preset_used: preset_used_slug, preset_saved };
 }
 
 async function defineReminder(args: any, data: Data) {
@@ -868,38 +759,8 @@ async function deleteEntity(args: any, data: Data) {
       break;
     case "session": {
       if (!id.startsWith("session:")) throw new Error("session id 는 'session:' 로 시작하는 전체 key.");
-      // session 삭제 시 해당 routine 의 next_session_goal 도 재계산
-      const sess = await data.get(id);
-      if (sess && typeof sess.slug === "string") {
-        key = id;
-        const ok = await data.delete(key);
-        // 재계산 — 디로드 아니었으면 다음 stash 갱신
-        const next = await computeNextTarget(sess.slug, data).catch(() => null);
-        if (next && typeof (next as any).next_target === "number") {
-          const routine = await data.get(`routine:${sess.slug}`);
-          if (routine) {
-            routine.next_session_goal = {
-              value: (next as any).next_target,
-              computed_at: nowIso(),
-              source: "auto",
-              note: null,
-            };
-            routine.updated_at = nowIso();
-            await data.set(`routine:${sess.slug}`, routine);
-            sideEffect = { recomputed_next_session_goal_for: sess.slug };
-          }
-        } else {
-          // 신호 부족 → stash 자체를 비움 (stale 방지)
-          const routine = await data.get(`routine:${sess.slug}`);
-          if (routine && routine.next_session_goal) {
-            routine.next_session_goal = null;
-            routine.updated_at = nowIso();
-            await data.set(`routine:${sess.slug}`, routine);
-            sideEffect = { cleared_next_session_goal_for: sess.slug };
-          }
-        }
-        return { deleted: ok, kind, id, axis: null, side_effect: sideEffect };
-      }
+      // 세션은 기록만 — 삭제 시 해당 기록만 지운다.
+      // (다음 목표는 사용자가 직접 정하는 값이라 세션 삭제로 건드리지 않음)
       key = id;
       break;
     }
@@ -916,7 +777,7 @@ async function getState(data: Data) {
   const nowMin = hhmmToMin(hhmmInTz(settings.timezone));
   const sevenDaysAgo = Date.now() - 7 * 86400 * 1000;
 
-  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, splitPlansRaw, mealPresetsRaw, derived] = await Promise.all([
+  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, splitPlansRaw, mealPresetsRaw] = await Promise.all([
     data.list("metric:"),
     data.list("routine:"),
     data.list("activity:"),
@@ -925,7 +786,6 @@ async function getState(data: Data) {
     data.list("fact:"),
     data.list("split_plan:"),
     data.list("meal_preset:"),
-    computeDerived(settings, data),
   ]);
   const metricDefs = metricDefsRaw.map(r => r.value).filter(nonNull);
   const routineDefs = routineDefsRaw.map(r => r.value).filter(nonNull);
@@ -1021,13 +881,13 @@ async function getState(data: Data) {
   let recommended_next_action: string;
   if (!goal) {
     protocol_step = "awaiting_goal";
-    recommended_next_action = "set_goal — 사용자 본인이 표현한 자연어 목표 한 문장을 받아 등록.";
+    recommended_next_action = "set_goal — 사용자 본인이 표현한 자연어 목표 한 문장을 받아 그대로 기록.";
   } else if (!anyRegistered) {
     protocol_step = "awaiting_initial_setup";
-    recommended_next_action = "suggest_setup 으로 템플릿을 받아 사용자에게 제시 → 합의 → define_metric / define_routine_exercise / define_reminder / define_user_fact 로 등록.";
+    recommended_next_action = "사용자와 직접 협의해 '무엇을 기록할지' 정한 뒤 define_metric / define_routine_exercise / define_reminder / define_user_fact 로 등록. 마도서가 기록 항목을 추천하지 말 것.";
   } else {
     protocol_step = "operational";
-    recommended_next_action = "사용자 요청 처리. 응답·계산은 본 state 안의 사실에만 근거.";
+    recommended_next_action = "사용자 요청 처리. 응답·표시는 본 state 안의 기록된 사실에만 근거.";
   }
 
   return {
@@ -1038,7 +898,6 @@ async function getState(data: Data) {
     settings,
     server_now: nowIso(),
     server_now_local: `${today} ${hhmmInTz(settings.timezone)}`,
-    derived,
     metrics,
     routines,
     recent_activities,
@@ -1110,22 +969,6 @@ async function nextSequenceBucket(plan: any, data: Data) {
     key: order[0], label: first.label, routine_slugs: first.routine_slugs,
     reason: "최근 세션이 plan buckets 에 매칭 안 됨 — 첫 번째부터.",
   } : null;
-}
-
-async function nextTarget(args: any, data: Data) {
-  const slug = String(args.slug ?? "");
-  return await computeNextTarget(slug, data);
-}
-
-function routinePlan(routine: any) {
-  const target_sets = typeof routine.target_sets === "number" ? routine.target_sets : null;
-  const target_reps = typeof routine.target_reps === "number" ? routine.target_reps : null;
-  const minOk = typeof routine.target_reps_min === "number";
-  const maxOk = typeof routine.target_reps_max === "number";
-  const target_reps_range = (minOk && maxOk)
-    ? { min: routine.target_reps_min, max: routine.target_reps_max }
-    : null;
-  return { target_sets, target_reps, target_reps_range };
 }
 
 function computeProgressionState(routine: any, sessions: any[]) {
@@ -1203,294 +1046,6 @@ function computeProgressionState(routine: any, sessions: any[]) {
   };
 }
 
-async function computeNextTarget(slug: string, data: Data) {
-  const routine = await data.get(`routine:${slug}`);
-  if (!routine) throw new Error(`등록되지 않은 운동 slug: ${slug}.`);
-
-  const sessions = (await data.list(`session:${slug}:`))
-    .map(r => r.value).filter(nonNull)
-    .sort((a: any, b: any) => String(a.performed_at).localeCompare(String(b.performed_at)));
-
-  const plan = routinePlan(routine);
-  const progression = routine.progression || "weight";
-  const direction: "increase" | "decrease" = progression === "time" ? "decrease" : "increase";
-  const hasWV = typeof routine.working_value === "number";
-
-  // 신호 부족 (세션/본세션/본세트 없음) 시 — working_value 있으면 그걸 시작점으로 제안
-  const fallbackNoSignal = (reason: string, extra: Record<string, any> = {}) => {
-    if (hasWV) {
-      return {
-        next_target: routine.working_value,
-        unit: routine.unit,
-        progression,
-        direction,
-        plan,
-        basis: {
-          base_value: routine.working_value,
-          base_source: "working_value",
-          ...extra,
-          reason,
-        },
-        working_value_recommendation: null,
-      };
-    }
-    return { next_target: null, plan, reason, ...extra };
-  };
-
-  if (sessions.length === 0) {
-    return fallbackNoSignal("세션 기록 없음 — 시작 값은 사용자가 선택.");
-  }
-
-  // 디로드 세션은 progression 추론에서 통째 제외
-  const progSessions = sessions.filter((s: any) => s.is_deload !== true);
-  const skipped_deload = sessions.length - progSessions.length;
-
-  if (progSessions.length === 0) {
-    return fallbackNoSignal(
-      `최근 ${sessions.length}개 세션이 모두 디로드 — 추론 가능한 본세션 없음.`,
-      { sessions_skipped_deload: skipped_deload },
-    );
-  }
-
-  const last: any = progSessions[progSessions.length - 1];
-  // 워밍업 세트 제외
-  const workSets = last.sets.filter((s: any) => s.is_warmup !== true);
-  const skipped_warmup = last.sets.length - workSets.length;
-
-  if (workSets.length === 0) {
-    return fallbackNoSignal(
-      "직전 비-디로드 세션의 본세트 없음 (전부 워밍업).",
-      { sessions_skipped_deload: skipped_deload, warmup_sets_skipped: skipped_warmup },
-    );
-  }
-
-  const lastAvgRpe = mean(workSets.map((s: any) => Number(s.rpe)));
-  const lastAvgValue = mean(workSets.map((s: any) => setValue(s, progression)));
-  const target = typeof routine.default_rpe_target === "number" ? routine.default_rpe_target : 8;
-
-  // fail-safe — set_size 가 있는 루틴(카디오 인터벌·격투 라운드)은 unit 의미가 progression 기본 증분과 다를 가능성 높음
-  // (예 progression=distance + unit=km/h 면 9km/h + 100m = 109km/h 같은 nonsense). default_increment 명시 안 했으면 추천 거부.
-  if (routine.set_size && typeof routine.default_increment !== "number") {
-    return {
-      next_target: null,
-      unit: routine.unit,
-      progression,
-      direction,
-      plan,
-      reason: "set_size 가 있는 루틴은 default_increment 명시 필수 — 사용자에게 '한 단계 올릴 때 몇씩?' 물어 update_routine_state 로 등록 후 재호출.",
-      basis: {
-        base_value: null,
-        base_source: "blocked_set_size_requires_increment",
-        last_avg_value: lastAvgValue,
-        last_avg_rpe: lastAvgRpe,
-        target_rpe: target,
-        session_count: sessions.length,
-        sessions_skipped_deload: skipped_deload,
-        warmup_sets_skipped_in_last: skipped_warmup,
-        work_sets_used: workSets.length,
-      },
-      working_value_recommendation: null,
-    };
-  }
-
-  let increment: number = typeof routine.default_increment === "number"
-    ? routine.default_increment
-    : defaultIncrement(progression, routine.category ?? null);
-  let increment_source = typeof routine.default_increment === "number" ? "routine.default_increment" : "default";
-  if (progression === "weight" && routine.category === "compound") {
-    const plateFact = await data.get(`fact:exercise:min_plate_increment_kg`);
-    if (plateFact?.value && typeof plateFact.value.v === "number" && plateFact.value.v > 0) {
-      increment = plateFact.value.v;
-      increment_source = "fact:exercise:min_plate_increment_kg";
-    }
-  }
-
-  let push: number;
-  if (lastAvgRpe < target - 1) push = 2;
-  else if (lastAvgRpe <= target) push = 1;
-  else if (lastAvgRpe <= target + 1) push = 0;
-  else push = -1;
-
-  const delta = direction === "increase" ? push * increment : -(push * increment);
-
-  // base = working_value (등록된 능력치) 우선, 없으면 직전 본세트 평균 fallback
-  const baseValue = hasWV ? routine.working_value : lastAvgValue;
-  const baseSource = hasWV ? "working_value" : "last_session_avg";
-  let proposed = baseValue + delta;
-
-  // weekly_cap baseline 도 디로드/워밍업 제외
-  let cap_applied = false;
-  if (typeof routine.weekly_cap === "number" && routine.weekly_cap > 0) {
-    const sevenDaysAgo = Date.now() - 7 * 86400 * 1000;
-    const recentProg = progSessions.filter((s: any) => new Date(s.performed_at).getTime() >= sevenDaysAgo);
-    if (recentProg.length > 0) {
-      const earliestWorkSets = recentProg[0].sets.filter((s: any) => s.is_warmup !== true);
-      if (earliestWorkSets.length > 0) {
-        const earliestAvg = mean(earliestWorkSets.map((s: any) => setValue(s, progression)));
-        if (direction === "increase") {
-          if (proposed - earliestAvg > routine.weekly_cap) {
-            proposed = earliestAvg + routine.weekly_cap;
-            cap_applied = true;
-          }
-        } else {
-          if (earliestAvg - proposed > routine.weekly_cap) {
-            proposed = earliestAvg - routine.weekly_cap;
-            cap_applied = true;
-          }
-        }
-      }
-    }
-  }
-
-  // working_value 갱신 추천 — 코드는 자동 반영 안 함, AI 가 사용자 합의 후 update_routine_state 호출
-  const wvRec = (() => {
-    if (!hasWV) {
-      return {
-        current_working_value: null,
-        last_session_avg: lastAvgValue,
-        diff: null,
-        suggested_new_value: lastAvgValue,
-        recommend_update: true,
-        reason: "working_value 미설정 — 직전 본세트 평균을 working_value 로 등록 권장.",
-      };
-    }
-    const diff = lastAvgValue - routine.working_value;
-    const recommend = Math.abs(diff) >= increment * 0.5;
-    let reason: string;
-    if (!recommend) {
-      reason = "직전 본세트 평균이 working_value 와 거의 동일 — 갱신 불필요.";
-    } else if (direction === "increase") {
-      reason = diff > 0
-        ? "직전 본세트 평균이 working_value 보다 큼 — 능력치 갱신 권장."
-        : "직전 본세트 평균이 working_value 보다 낮음 — 능력치 하향 조정 검토 권장.";
-    } else {
-      // time: 낮을수록 좋음 — diff<0 이면 더 짧아졌다는 뜻 (성장)
-      reason = diff < 0
-        ? "직전 본세트 시간이 working_value 보다 짧음 — 능력치 갱신 권장."
-        : "직전 본세트 시간이 working_value 보다 김 — 능력치 하향 조정 검토 권장.";
-    }
-    return {
-      current_working_value: routine.working_value,
-      last_session_avg: lastAvgValue,
-      diff,
-      suggested_new_value: recommend ? lastAvgValue : routine.working_value,
-      recommend_update: recommend,
-      reason,
-    };
-  })();
-
-  return {
-    next_target: proposed,
-    unit: routine.unit,
-    progression,
-    direction,
-    plan,
-    basis: {
-      base_value: baseValue,
-      base_source: baseSource,
-      last_avg_value: lastAvgValue,
-      last_avg_rpe: lastAvgRpe,
-      target_rpe: target,
-      increment,
-      increment_source,
-      push_multiplier: push,
-      delta,
-      weekly_cap_applied: cap_applied,
-      session_count: sessions.length,
-      sessions_skipped_deload: skipped_deload,
-      warmup_sets_skipped_in_last: skipped_warmup,
-      work_sets_used: workSets.length,
-      last_session_superset_group: last.superset_group ?? null,
-    },
-    working_value_recommendation: wvRec,
-  };
-}
-
-const TEMPLATES = [
-  {
-    match: /(당뇨|혈당|glucose|diabet)/i,
-    label: "혈당 관리 표준 셋업",
-    metrics: [
-      { slug: "fasting_glucose", display_name: "공복 혈당", unit: "mg/dL", target_min: 70, target_max: 100, priority: "critical" },
-      { slug: "post_meal_glucose", display_name: "식후 2h 혈당", unit: "mg/dL", target_min: 70, target_max: 140, priority: "critical" },
-      { slug: "hba1c", display_name: "당화혈색소", unit: "%", target_min: 4.0, target_max: 5.7, priority: "high" },
-    ],
-    reminders: [
-      { id: "morning_glucose", kind: "measurement", label: "아침 공복 혈당 측정", schedule: "daily 07:00", target_metric_slug: "fasting_glucose" },
-    ],
-  },
-  {
-    match: /(체중|체지방|근비대|벌크|다이어트|감량|weight|fat|muscle|bulk|cut)/i,
-    label: "체성분 추적 표준 셋업",
-    metrics: [
-      { slug: "body_weight_kg", display_name: "체중", unit: "kg", priority: "high" },
-      { slug: "body_fat_pct", display_name: "체지방률", unit: "%", priority: "high" },
-      { slug: "skeletal_muscle_kg", display_name: "골격근량", unit: "kg", priority: "high" },
-    ],
-    note: "기초대사량(BMR)·나이는 height_cm/sex/birth_year 설정 + body_weight_kg 측정으로 자동 계산. 별도 metric 등록 불필요.",
-    reminders: [
-      { id: "morning_weigh_in", kind: "measurement", label: "아침 체중 측정", schedule: "daily 07:00", target_metric_slug: "body_weight_kg" },
-    ],
-  },
-  {
-    match: /(근력|벤치|스쿼트|데드|3대|strength|bench|squat|deadlift|powerlift)/i,
-    label: "3대 운동 루틴 표준 셋업",
-    routines: [
-      { slug: "squat", display_name: "백 스쿼트", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5, target_sets: 3, target_reps: 5 },
-      { slug: "bench_press", display_name: "벤치프레스", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5, target_sets: 3, target_reps: 5 },
-      { slug: "deadlift", display_name: "데드리프트", progression: "weight", category: "compound", unit: "kg", default_rpe_target: 8, weekly_cap: 5, target_sets: 3, target_reps: 5 },
-    ],
-    facts: [
-      { axis: "exercise", slug: "min_plate_increment_kg", label: "최소 plate 증분", value_example: { v: 2.5 }, hint: "헬스장에 1.25kg 원판이 없으면 v: 5 로 등록." },
-    ],
-  },
-  {
-    match: /(혈압|고혈압|blood pressure|hypertension)/i,
-    label: "혈압 관리 표준 셋업",
-    metrics: [
-      { slug: "systolic_bp", display_name: "수축기 혈압", unit: "mmHg", target_min: 90, target_max: 120, priority: "critical" },
-      { slug: "diastolic_bp", display_name: "이완기 혈압", unit: "mmHg", target_min: 60, target_max: 80, priority: "critical" },
-      { slug: "resting_hr", display_name: "안정시 심박수", unit: "bpm", target_min: 50, target_max: 80, priority: "high" },
-    ],
-    reminders: [
-      { id: "morning_bp", kind: "measurement", label: "아침 혈압 측정", schedule: "daily 08:00", target_metric_slug: "systolic_bp" },
-    ],
-  },
-  {
-    match: /(영양제|supplement|비타민|오메가|vitamin|omega)/i,
-    label: "기본 영양제 알람 셋업 (예시)",
-    reminders: [
-      { id: "vitamin_d", kind: "supplement", label: "비타민D 1정", schedule: "daily 09:00" },
-      { id: "omega_3", kind: "supplement", label: "오메가-3", schedule: "daily 09:00" },
-    ],
-  },
-  {
-    match: /(마라톤|러닝|유산소|지구력|cardio|run|marathon|endurance)/i,
-    label: "유산소 지구력 셋업",
-    metrics: [
-      { slug: "resting_hr", display_name: "안정시 심박수", unit: "bpm", priority: "high" },
-      { slug: "vo2max", display_name: "VO2max", unit: "mL/kg/min", priority: "normal" },
-    ],
-    routines: [
-      { slug: "run_5k", display_name: "5km 러닝", progression: "time", unit: "seconds", default_rpe_target: 8, target_sets: 1 },
-    ],
-  },
-];
-
-async function suggestSetup(data: Data) {
-  const goal = await data.get("goal");
-  if (!goal) {
-    return { protocol_step: "awaiting_goal", templates: [], message: "goal 미설정 — set_goal 먼저." };
-  }
-  const text = String(goal.text ?? "");
-  const templates = TEMPLATES.filter(t => t.match.test(text)).map(({ match, ...rest }) => rest);
-  return {
-    goal: goal.text,
-    templates,
-    note: "이는 '추천'이 아니라 '제안 후보'. AI 가 사용자에게 그대로 제시 → 합의 → define_metric / define_reminder / define_routine_exercise / define_user_fact 로 실제 등록. 빈 배열이면 goal 에 매칭 키워드가 없는 것이므로 AI 가 사용자와 직접 협의해서 정의.",
-  };
-}
-
 async function checkReminders(data: Data) {
   const settings = await getSettings(data);
   const today = dateInTz(settings.timezone);
@@ -1556,15 +1111,14 @@ function buildDashboardHtml(tab: string, s: any): string {
     content += renderExerciseCard(s.routines, s.recent_activities);
     content += renderFactsCard("운동 환경/장비/제약", s.user_facts.exercise);
   } else if (tab === "metrics") {
-    content += renderDerivedCard(s.derived);
     content += renderMetricsCard(s.metrics);
     content += renderFactsCard("건강 관련 사실 (알레르기·복용약 등)", s.user_facts.health_metric);
   } else if (tab === "diet") {
-    content += renderDietCard(s.meals_today, s.reminders, s.derived, s.settings);
+    content += renderDietCard(s.meals_today, s.reminders, s.settings);
     content += renderMealPresetCard(s.meal_presets);
     content += renderFactsCard("식단 제약·알람 관련", s.user_facts.diet_reminder);
   } else if (tab === "baseline") {
-    content += renderBaselineSettingsCard(s.settings, s.derived);
+    content += renderBaselineSettingsCard(s.settings);
     content += renderFactsCard("기본 정보 (천천히 변하거나 고정)", s.user_facts.baseline);
   }
 
@@ -1650,12 +1204,6 @@ function renderOverviewCard(s: any): string {
   html += `<div class="row"><div class="name">알람</div><div class="val">${s.reminders.length}</div></div>`;
   html += `<div class="row"><div class="name">사용자 사실 (4축 합계)</div><div class="val">${factCount}</div></div>`;
   html += `<div class="row"><div class="name">활성 분할</div><div class="val">${s.active_split_plan ? escapeHtml(s.active_split_plan.name) : '<span class="meta">없음</span>'}</div></div>`;
-  if (s.derived?.age !== null) {
-    html += `<div class="row"><div class="name">나이 (자동)</div><div class="val">${s.derived.age}세</div></div>`;
-  }
-  if (s.derived?.bmr !== null) {
-    html += `<div class="row"><div class="name">기초대사량 (Mifflin-St Jeor)</div><div class="val">${s.derived.bmr} kcal</div></div>`;
-  }
   html += `</div>`;
 
   if (s.active_split_plan) {
@@ -1670,10 +1218,8 @@ function renderOverviewCard(s: any): string {
       const g = item.goal;
       const unit = item.unit ? ` ${escapeHtml(String(item.unit))}` : "";
       const valStr = `${roundForDisplay(g.value)}${unit}`;
-      const srcCls = g.source === "manual" ? "due" : "ok";
-      const srcLabel = g.source === "manual" ? "직접 지정" : "자동";
       const noteStr = g.note ? ` <span class="meta">· ${escapeHtml(String(g.note))}</span>` : "";
-      html += `<div class="row"><div class="name">${escapeHtml(item.display_name)}</div><div class="val">🎯 <b>${valStr}</b> <span class="badge ${srcCls}">${srcLabel}</span>${noteStr}</div></div>`;
+      html += `<div class="row"><div class="name">${escapeHtml(item.display_name)}</div><div class="val">🎯 <b>${valStr}</b> <span class="badge due">직접 지정</span>${noteStr}</div></div>`;
     }
     html += `</div>`;
   }
@@ -1692,12 +1238,12 @@ function renderOverviewCard(s: any): string {
   if (t.count === 0) {
     html += '<div class="empty">아직 기록 없음.</div>';
   } else {
-    if (s.derived?.maintenance_kcal !== null && t.kcal !== null) {
-      const delta = t.kcal - s.derived.maintenance_kcal;
+    const kcalRef = s.settings?.daily_kcal_reference ?? null;
+    if (kcalRef !== null && t.kcal !== null) {
+      const delta = t.kcal - kcalRef;
       const sign = delta >= 0 ? "+" : "";
-      const deltaCls = Math.abs(delta) < 200 ? "ok" : (delta > 0 ? "warn" : "due");
-      html += `<div class="row"><div class="name">${t.count}끼 합계</div><div class="val"><b>${t.kcal}</b> / ${s.derived.maintenance_kcal} kcal <span class="badge ${deltaCls}">${sign}${delta}</span></div></div>`;
-      html += renderMaintenanceBar(t.kcal, s.derived.maintenance_kcal);
+      html += `<div class="row"><div class="name">${t.count}끼 합계</div><div class="val"><b>${t.kcal}</b> / ${kcalRef} kcal <span class="badge meta">${sign}${delta}</span></div></div>`;
+      html += renderKcalBar(t.kcal, kcalRef);
     } else if (t.kcal !== null) {
       html += `<div class="row"><div class="name">${t.count}끼 합계</div><div class="val"><b>${t.kcal} kcal</b></div></div>`;
     } else {
@@ -1962,13 +1508,11 @@ function renderRoutineBlock(r: any): string {
   if (g && typeof g.value === "number") {
     const unit = r.unit ? ` ${escapeHtml(String(r.unit))}` : "";
     const valStr = `${roundForDisplay(g.value)}${unit}`;
-    const srcBadge = g.source === "manual"
-      ? `<span class="badge due" style="margin-left:6px">직접 지정</span>`
-      : `<span class="badge ok" style="margin-left:6px">자동</span>`;
+    const srcBadge = `<span class="badge due" style="margin-left:6px">직접 지정</span>`;
     const noteStr = g.note ? `<div class="goal-note">📝 ${escapeHtml(String(g.note))}</div>` : "";
     goalBlock = `<div class="goal-line">🎯 다음 목표 <b>${valStr}</b>${srcBadge}${noteStr}</div>`;
   } else {
-    goalBlock = `<div class="goal-line dim">🎯 다음 목표 <span class="meta">세션 기록 시 자동 계산</span></div>`;
+    goalBlock = `<div class="goal-line dim">🎯 다음 목표 <span class="meta">미설정 — 사용자가 "다음엔 X" 라고 말하면 그대로 기록</span></div>`;
   }
 
   // 능력치 라인 — 현재 / 직전 / 최고
@@ -2032,30 +1576,30 @@ function formatHmFromIso(iso: string, tz: string): string {
   }
 }
 
-function renderMaintenanceBar(consumed: number, maintenance: number): string {
-  // 0~1.2 비율 막대. 1.0 위치에 maintenance 마크.
-  const ratio = Math.max(0, Math.min(1.2, consumed / maintenance));
+function renderKcalBar(consumed: number, reference: number): string {
+  // 0~1.2 비율 막대. 1.0 위치에 사용자가 정한 기준 칼로리 마크 (마도서가 계산한 값 아님).
+  const ratio = Math.max(0, Math.min(1.2, consumed / reference));
   const widthPct = (ratio / 1.2) * 100;
   const markPct = (1.0 / 1.2) * 100;
   return `<div class="kbar"><div class="kbar-fill" style="width:${widthPct.toFixed(1)}%"></div><div class="kbar-mark" style="left:${markPct.toFixed(1)}%"></div></div>`;
 }
 
-function renderDietCard(mealsToday: any, reminders: any[], derived: any, settings: any): string {
+function renderDietCard(mealsToday: any, reminders: any[], settings: any): string {
   let html = `<div class="card"><h3>오늘 식단 · ${escapeHtml(mealsToday.date)}</h3>`;
   if (mealsToday.items.length === 0) {
     html += '<div class="empty">오늘 기록된 끼 없음.</div>';
   } else {
     const t = mealsToday.totals;
 
-    // 칼로리 + 유지 칼로리 비교 — 가장 위
-    if (derived?.maintenance_kcal !== null && t.kcal !== null) {
-      const delta = t.kcal - derived.maintenance_kcal;
+    // 오늘 섭취 + (사용자가 직접 정한) 기준 칼로리 비교 — 가장 위. 마도서는 적정량을 계산/추천하지 않는다.
+    const kcalRef = settings?.daily_kcal_reference ?? null;
+    if (kcalRef !== null && t.kcal !== null) {
+      const delta = t.kcal - kcalRef;
       const sign = delta >= 0 ? "+" : "";
-      const deltaCls = Math.abs(delta) < 200 ? "ok" : (delta > 0 ? "warn" : "due");
-      html += `<div class="row"><div class="name">오늘 섭취</div><div class="val"><b>${t.kcal}</b> / ${derived.maintenance_kcal} kcal <span class="badge ${deltaCls}">${sign}${delta}</span></div></div>`;
-      html += renderMaintenanceBar(t.kcal, derived.maintenance_kcal);
+      html += `<div class="row"><div class="name">오늘 섭취</div><div class="val"><b>${t.kcal}</b> / ${kcalRef} kcal <span class="badge meta">${sign}${delta}</span></div></div>`;
+      html += renderKcalBar(t.kcal, kcalRef);
     } else if (t.kcal !== null) {
-      html += `<div class="row"><div class="name">오늘 섭취</div><div class="val"><b>${t.kcal} kcal</b> <span class="meta">(maintenance 미설정)</span></div></div>`;
+      html += `<div class="row"><div class="name">오늘 섭취</div><div class="val"><b>${t.kcal} kcal</b> <span class="meta">(기준 칼로리 미설정)</span></div></div>`;
     } else {
       html += `<div class="row"><div class="name">${t.count}끼 기록</div><div class="val"><span class="meta">칼로리 미입력</span></div></div>`;
     }
@@ -2125,38 +1669,12 @@ function renderMealPresetCard(presets: any[]): string {
   return html;
 }
 
-function renderDerivedCard(derived: any): string {
-  if (!derived || (derived.age === null && derived.bmr === null)) return "";
-  let html = '<div class="card"><h3>자동 계산</h3>';
-  if (derived.age !== null) {
-    html += `<div class="row"><div class="name">현재 나이</div><div class="val">${derived.age}세</div></div>`;
-  }
-  if (derived.bmr !== null) {
-    html += `<div class="row"><div class="name">기초대사량 (Mifflin-St Jeor)</div><div class="val">${derived.bmr} kcal</div></div>`;
-    const src = derived.bmr_source;
-    if (src) {
-      html += `<div class="row"><div class="name"><span class="meta">기준</span></div><div class="val"><span class="meta">${src.weight_kg}kg · ${src.height_cm}cm · ${src.age}세 · ${src.sex}</span></div></div>`;
-    }
-  }
-  if (derived.maintenance_kcal !== null) {
-    html += `<div class="row"><div class="name">Maintenance (BMR × AF)</div><div class="val">${derived.maintenance_kcal} kcal</div></div>`;
-  }
-  html += "</div>";
-  return html;
-}
-
-function renderBaselineSettingsCard(settings: any, derived: any): string {
+function renderBaselineSettingsCard(settings: any): string {
   const unsetMeta = '<span class="meta">미설정</span>';
-  const sexLabel = settings.sex === "male" ? "남성" : settings.sex === "female" ? "여성" : unsetMeta;
+  const kcalRef = settings?.daily_kcal_reference ?? null;
   let html = '<div class="card"><h3>고정 설정 (nesy.app UI 폼)</h3>';
   html += `<div class="row"><div class="name">Timezone</div><div class="val">${escapeHtml(settings.timezone)}</div></div>`;
-  html += `<div class="row"><div class="name">신장</div><div class="val">${settings.height_cm > 0 ? `${settings.height_cm} cm` : unsetMeta}</div></div>`;
-  html += `<div class="row"><div class="name">성별</div><div class="val">${sexLabel}</div></div>`;
-  html += `<div class="row"><div class="name">출생년도</div><div class="val">${settings.birth_year > 0 ? `${settings.birth_year}년` : unsetMeta}</div></div>`;
-  html += `<div class="row"><div class="name">Activity factor</div><div class="val">${settings.activity_factor > 0 ? settings.activity_factor : unsetMeta}</div></div>`;
-  if (derived?.age !== null) {
-    html += `<div class="row"><div class="name">현재 나이 (자동)</div><div class="val">${derived.age}세</div></div>`;
-  }
+  html += `<div class="row"><div class="name">하루 기준 칼로리 <span class="meta">(직접 입력)</span></div><div class="val">${kcalRef !== null ? `${kcalRef} kcal` : unsetMeta}</div></div>`;
   html += "</div>";
   return html;
 }
