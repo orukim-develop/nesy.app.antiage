@@ -1113,6 +1113,11 @@ async function renderDashboard(args: any, data: Data) {
   return { html: buildDashboardHtml(tab, s) };
 }
 
+// 아이콘 — 이모지는 일부 환경에서 [ ] 로 깨져, 어디서나 렌더되는 인라인 SVG 로 대체.
+const SVG_TARGET = `<svg class="ic ic-tgt" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.4"/></svg>`;
+const SVG_NOTE = `<svg class="ic ic-note" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 4.5h9M3.5 8h9M3.5 11.5h5.5"/></svg>`;
+const SVG_WARN = `<svg class="ic ic-warn" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"><path d="M8 2.6l5.4 9.8H2.6z"/><path d="M8 6.6v3"/><path d="M8 11.4h.01"/></svg>`;
+
 function buildDashboardHtml(tab: string, s: any): string {
   const stepLabels: Record<string, string> = {
     awaiting_goal: "1단계 — 목표 대기",
@@ -1121,7 +1126,7 @@ function buildDashboardHtml(tab: string, s: any): string {
   };
   const goalText = s.goal?.text
     ? escapeHtml(s.goal.text)
-    : `<em style="color:#888">목표 미설정 — AI에게 "목표 설정해줘"</em>`;
+    : `<em style="color:#9ca3af">목표 미설정 — AI에게 "목표 설정해줘"</em>`;
   const tabs: [string, string][] = [
     ["overview", "전체"],
     ["exercise", "운동"],
@@ -1153,59 +1158,63 @@ function buildDashboardHtml(tab: string, s: any): string {
 <html lang="ko"><head><meta charset="utf-8">
 <style>
 *{box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:14px;background:#0a0a0a;color:#e5e5e5;font-size:13px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:14px;background:#f5f6f8;color:#1f2328;font-size:13px;overflow-wrap:anywhere;overflow-x:hidden}
 .hdr{border-left:3px solid #7c3aed;padding-left:12px;margin-bottom:14px}
-.step{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.5px}
-.goal{font-size:15px;margin-top:4px;color:#fafafa;line-height:1.4}
-.tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid #2a2a2a;flex-wrap:wrap}
-.tab{padding:7px 13px;cursor:pointer;color:#888;border:none;background:none;font-size:12px;font-family:inherit}
-.tab.active{color:#fafafa;border-bottom:2px solid #7c3aed}
-.card{background:#141414;border:1px solid #2a2a2a;border-radius:8px;padding:13px;margin-bottom:10px}
-.card h3{margin:0 0 9px;font-size:12px;color:#c0c0c0;font-weight:500;text-transform:uppercase;letter-spacing:.5px}
-.row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1f1f1f;gap:8px}
+.step{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px}
+.goal{font-size:15px;margin-top:4px;color:#111827;line-height:1.4}
+.tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap}
+.tab{padding:7px 13px;cursor:pointer;color:#6b7280;border:none;background:none;font-size:12px;font-family:inherit}
+.tab.active{color:#111827;border-bottom:2px solid #7c3aed}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:13px;margin-bottom:10px}
+.card h3{margin:0 0 9px;font-size:12px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eef0f3;gap:8px}
 .row:last-child{border-bottom:none}
-.row.hi{background:#1a1530;border-radius:4px;padding-left:6px;padding-right:6px;margin:0 -6px}
+.row.hi{background:#f3f0ff;border-radius:4px;padding-left:6px;padding-right:6px;margin:0 -6px}
 .row.stacked{flex-direction:column;align-items:stretch;gap:2px;padding:6px 0}
-.row.stacked .name{font-size:11px;color:#a0a0a0}
-.row.stacked .val{text-align:left;white-space:normal;font-size:12px;color:#d4d4d4}
-.name{color:#d4d4d4;min-width:0;word-break:break-word}
-.val{color:#fafafa;font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0;word-break:break-word;overflow-wrap:anywhere}
+.row.stacked .name{font-size:11px;color:#6b7280}
+.row.stacked .val{text-align:left;white-space:normal;font-size:12px;color:#374151}
+.name{color:#374151;min-width:0;word-break:break-word;overflow-wrap:anywhere}
+.val{color:#111827;font-variant-numeric:tabular-nums;text-align:right;min-width:0;word-break:break-word;overflow-wrap:anywhere}
 .badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;margin-left:6px;vertical-align:middle}
-.ok{background:#15402a;color:#4ade80}
-.warn{background:#4a2f15;color:#fbbf24}
-.crit{background:#4a1515;color:#f87171}
-.due{background:#2a2a4a;color:#93c5fd}
-.empty{color:#666;font-style:italic;padding:4px 0}
-.scope{font-size:10px;color:#666;text-align:center;margin-top:16px;padding-top:10px;border-top:1px solid #1f1f1f;line-height:1.6}
-.scope b{color:#9a8cce}
-.meta{color:#777;font-size:11px}
+.ok{background:#dcfce7;color:#15803d}
+.warn{background:#fef3c7;color:#b45309}
+.crit{background:#fee2e2;color:#b91c1c}
+.due{background:#e0e7ff;color:#4338ca}
+.empty{color:#9ca3af;font-style:italic;padding:4px 0}
+.scope{font-size:10px;color:#9ca3af;text-align:center;margin-top:16px;padding-top:10px;border-top:1px solid #e5e7eb;line-height:1.6}
+.scope b{color:#7c3aed}
+.meta{color:#6b7280;font-size:11px}
 .dim{opacity:.6}
-.tag{display:inline-block;font-size:10px;color:#a0a0a0;background:#1f1f1f;padding:1px 6px;border-radius:3px;margin-left:6px;vertical-align:middle}
-.tag.dim{background:#1a1a1a;color:#666}
-.sub-hdr{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:10px 0 4px;padding-top:8px;border-top:1px solid #1f1f1f}
-.routine{padding:8px 6px;margin:0 -6px;border-bottom:1px solid #1f1f1f}
+.tag{display:inline-block;font-size:10px;color:#4b5563;background:#f3f4f6;padding:1px 6px;border-radius:3px;margin-left:6px;vertical-align:middle}
+.tag.dim{background:#f9fafb;color:#9ca3af}
+.sub-hdr{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin:10px 0 4px;padding-top:8px;border-top:1px solid #eef0f3}
+.routine{padding:8px 6px;margin:0 -6px;border-bottom:1px solid #eef0f3}
 .routine:last-child{border-bottom:none}
 .routine-hdr{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:5px}
-.routine-name{color:#d4d4d4;min-width:0}
-.routine-last{color:#fafafa;font-size:11px;font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0}
-.goal-line{font-size:13px;color:#fafafa;padding:5px 8px;background:#1a1530;border-left:2px solid #7c3aed;border-radius:0 4px 4px 0;margin:3px 0}
-.goal-line b{color:#c4b5fd;font-size:14px}
-.goal-line.dim{background:#161616;border-left-color:#333;color:#666}
-.goal-note{font-size:11px;color:#a0a0a0;margin-top:3px}
-.stat-row{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 2px;font-size:11px;color:#888}
+.routine-name{color:#374151;min-width:0;word-break:break-word;overflow-wrap:anywhere}
+.routine-last{color:#111827;font-size:11px;font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0}
+.goal-line{font-size:13px;color:#1f2937;padding:5px 8px;background:#f5f3ff;border-left:2px solid #7c3aed;border-radius:0 4px 4px 0;margin:3px 0}
+.goal-line b{color:#6d28d9;font-size:14px}
+.goal-line.dim{background:#f9fafb;border-left-color:#e5e7eb;color:#9ca3af}
+.goal-note{font-size:11px;color:#6b7280;margin-top:3px}
+.stat-row{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 2px;font-size:11px;color:#6b7280}
 .stat{white-space:nowrap}
-.stat-k{color:#666;margin-right:3px}
-.stat b{color:#d4d4d4}
-.memo{font-size:11px;color:#c0c0c0;background:#181818;padding:5px 8px;border-radius:4px;margin:4px 0 2px;border-left:2px solid #444}
-.kbar{height:6px;background:#1f1f1f;border-radius:3px;overflow:hidden;margin:6px 0 4px;position:relative}
-.kbar-fill{height:100%;background:linear-gradient(90deg,#4ade80 0%,#fbbf24 80%,#f87171 100%);transition:width .2s}
-.kbar-mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:#888;opacity:.7}
-.meal-row{display:flex;gap:10px;padding:6px 4px;border-bottom:1px solid #1f1f1f;align-items:baseline}
+.stat-k{color:#9ca3af;margin-right:3px}
+.stat b{color:#374151}
+.memo{font-size:11px;color:#374151;background:#f9fafb;padding:5px 8px;border-radius:4px;margin:4px 0 2px;border-left:2px solid #d1d5db}
+.kbar{height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin:6px 0 4px;position:relative}
+.kbar-fill{height:100%;background:linear-gradient(90deg,#22c55e 0%,#f59e0b 80%,#ef4444 100%);transition:width .2s}
+.kbar-mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:#6b7280;opacity:.7}
+.meal-row{display:flex;gap:10px;padding:6px 4px;border-bottom:1px solid #eef0f3;align-items:baseline}
 .meal-row:last-child{border-bottom:none}
-.meal-time{color:#666;font-size:11px;font-variant-numeric:tabular-nums;min-width:42px;flex-shrink:0}
-.meal-name{color:#d4d4d4;flex:1;min-width:0;word-break:break-word}
-.meal-kcal{color:#fafafa;font-variant-numeric:tabular-nums;flex-shrink:0;font-size:12px}
-.meal-macro{color:#888;font-size:10px;flex-shrink:0;font-variant-numeric:tabular-nums}
+.meal-time{color:#9ca3af;font-size:11px;font-variant-numeric:tabular-nums;min-width:42px;flex-shrink:0}
+.meal-name{color:#374151;flex:1;min-width:0;word-break:break-word;overflow-wrap:anywhere}
+.meal-kcal{color:#111827;font-variant-numeric:tabular-nums;flex-shrink:0;font-size:12px}
+.meal-macro{color:#9ca3af;font-size:10px;flex-shrink:0;font-variant-numeric:tabular-nums}
+.ic{display:inline-block;width:12px;height:12px;vertical-align:-1px;margin-right:4px;flex-shrink:0}
+.ic-tgt{color:#7c3aed}
+.ic-note{color:#9ca3af}
+.ic-warn{color:#dc2626}
 </style></head><body>
 <div class="hdr">
 <div class="step">${escapeHtml(stepLabels[s.protocol_step] || s.protocol_step)} · ${escapeHtml(s.server_now_local)} (${escapeHtml(s.settings.timezone)})</div>
@@ -1249,14 +1258,14 @@ function renderOverviewCard(s: any): string {
       const unit = item.unit ? ` ${escapeHtml(String(item.unit))}` : "";
       const valStr = `${roundForDisplay(g.value)}${unit}`;
       const noteStr = g.note ? ` <span class="meta">· ${escapeHtml(String(g.note))}</span>` : "";
-      html += `<div class="row"><div class="name">${escapeHtml(item.display_name)}</div><div class="val">🎯 <b>${valStr}</b> <span class="badge due">직접 지정</span>${noteStr}</div></div>`;
+      html += `<div class="row"><div class="name">${escapeHtml(item.display_name)}</div><div class="val">${SVG_TARGET}<b>${valStr}</b> <span class="badge due">직접 지정</span>${noteStr}</div></div>`;
     }
     html += `</div>`;
   }
 
   const critical = s.metrics.filter((m: any) => m.priority === "critical" && m.in_target === false);
   if (critical.length > 0) {
-    html += `<div class="card"><h3 style="color:#f87171">⚠ critical 지표 범위 이탈 (${critical.length})</h3>`;
+    html += `<div class="card"><h3 style="color:#dc2626">${SVG_WARN}critical 지표 범위 이탈 (${critical.length})</h3>`;
     for (const m of critical) {
       html += `<div class="row"><div class="name">${escapeHtml(m.display_name)}</div><div class="val">${m.latest_value} ${escapeHtml(m.unit)}</div></div>`;
     }
@@ -1539,10 +1548,10 @@ function renderRoutineBlock(r: any): string {
     const unit = r.unit ? ` ${escapeHtml(String(r.unit))}` : "";
     const valStr = `${roundForDisplay(g.value)}${unit}`;
     const srcBadge = `<span class="badge due" style="margin-left:6px">직접 지정</span>`;
-    const noteStr = g.note ? `<div class="goal-note">📝 ${escapeHtml(String(g.note))}</div>` : "";
-    goalBlock = `<div class="goal-line">🎯 다음 목표 <b>${valStr}</b>${srcBadge}${noteStr}</div>`;
+    const noteStr = g.note ? `<div class="goal-note">${SVG_NOTE}${escapeHtml(String(g.note))}</div>` : "";
+    goalBlock = `<div class="goal-line">${SVG_TARGET}다음 목표 <b>${valStr}</b>${srcBadge}${noteStr}</div>`;
   } else {
-    goalBlock = `<div class="goal-line dim">🎯 다음 목표 <span class="meta">미설정 — 사용자가 "다음엔 X" 라고 말하면 그대로 기록</span></div>`;
+    goalBlock = `<div class="goal-line dim">${SVG_TARGET}다음 목표 <span class="meta">미설정 — 사용자가 "다음엔 X" 라고 말하면 그대로 기록</span></div>`;
   }
 
   // 능력치 라인 — 현재 / 직전 / 최고
@@ -1565,7 +1574,7 @@ function renderRoutineBlock(r: any): string {
 
   // 메모 — 콜아웃
   const memoBlock = r.memo
-    ? `<div class="memo">📝 ${escapeHtml(r.memo)}</div>`
+    ? `<div class="memo">${SVG_NOTE}${escapeHtml(r.memo)}</div>`
     : "";
 
   return `<div class="routine">
