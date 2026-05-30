@@ -1198,6 +1198,22 @@ async function loadWidgetSessions(data: Data, date: string, routines: any[]): Pr
   }));
   return out;
 }
+// 그 날짜에 실제로 한 모든 세션(위젯+AI)의 세트 — 지난 날 읽기 전용 표시용.
+async function loadDayRecords(data: Data, date: string, routines: any[], tz: string): Promise<Record<string, any[]>> {
+  const out: Record<string, any[]> = {};
+  await Promise.all(routines.map(async (r: any) => {
+    const rows = await data.list(`session:${r.slug}:`);
+    const sets: any[] = [];
+    for (const row of rows) {
+      const sv: any = row.value;
+      if (sv && Array.isArray(sv.sets) && sv.performed_at && dateInTz(tz, new Date(sv.performed_at)) === date) {
+        for (const st of sv.sets) sets.push(st);
+      }
+    }
+    if (sets.length > 0) out[r.slug] = sets;
+  }));
+  return out;
+}
 
 async function renderDashboard(args: any, data: Data) {
   const settings = await getSettings(data);
@@ -1216,8 +1232,11 @@ async function renderDashboard(args: any, data: Data) {
 
   const s: any = await getState(data);
   s.view_date = viewDate;
+  s.today = today;
   s.is_today = viewDate === today;
+  s.view_weekday = weekdayKey(settings.timezone, new Date(viewDate + "T12:00:00.000Z"));
   s.view_sessions = await loadWidgetSessions(data, viewDate, s.routines);
+  s.day_records = await loadDayRecords(data, viewDate, s.routines, settings.timezone);
   return { html: buildDashboardHtml(String(args.tab ?? "overview"), s) };
 }
 
@@ -1226,6 +1245,7 @@ const SVG_TARGET = `<svg class="ic ic-tgt" viewBox="0 0 16 16" fill="none" strok
 const SVG_NOTE = `<svg class="ic ic-note" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 4.5h9M3.5 8h9M3.5 11.5h5.5"/></svg>`;
 const SVG_WARN = `<svg class="ic ic-warn" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"><path d="M8 2.6l5.4 9.8H2.6z"/><path d="M8 6.6v3"/><path d="M8 11.4h.01"/></svg>`;
 const SVG_CHECK = `<svg class="ic" style="color:#16a34a" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 8.6l3 3 6.6-7.2"/></svg>`;
+const SVG_CAL = `<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/></svg>`;
 
 function buildDashboardHtml(tab: string, s: any): string {
   const stepLabels: Record<string, string> = {
@@ -1355,6 +1375,21 @@ details[open] .chev{transform:rotate(90deg)}
 .tw-clear{padding:6px 12px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;color:#9ca3af;font-size:12px;font-family:inherit;cursor:pointer}
 .tw-ask{margin-top:8px;padding:7px 9px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:12px;color:#92400e;line-height:1.5}
 .tw-yes{padding:3px 12px;border:none;border-radius:5px;background:#f59e0b;color:#fff;font-size:12px;font-family:inherit;cursor:pointer}
+.today-top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.today-top h3{margin:0}
+.cal-open{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;color:#374151;font-size:11px;font-variant-numeric:tabular-nums;font-family:inherit;cursor:pointer;flex-shrink:0}
+.lnk{color:#7c3aed;cursor:pointer;text-decoration:underline}
+.cal-pop{display:none;border:1px solid #e5e7eb;border-radius:8px;padding:9px;margin-bottom:10px;background:#fafafe}
+.cal-pop.open{display:block}
+.cal-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;font-size:12px;color:#374151;font-weight:600}
+.cal-nav{padding:3px 10px;border:1px solid #e5e7eb;border-radius:5px;background:#fff;color:#6b7280;font-size:11px;font-family:inherit;cursor:pointer}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.cal-wd{text-align:center;font-size:10px;color:#9ca3af;padding:2px 0}
+.cal-d{padding:6px 0;border:none;background:none;border-radius:5px;font-size:12px;font-family:inherit;color:#374151;cursor:pointer;font-variant-numeric:tabular-nums}
+.cal-d:hover{background:#f3f0ff}
+.cal-d.sel-d{background:#7c3aed;color:#fff}
+.cal-d.today-d{outline:1px solid #c4b5fd;color:#6d28d9;font-weight:700}
+.cal-today{margin-top:8px;width:100%;padding:6px;border:1px dashed #c4b5fd;border-radius:6px;background:#f5f3ff;color:#6d28d9;font-size:12px;font-family:inherit;cursor:pointer}
 </style></head><body>
 <div class="hdr">
 <div class="step">${escapeHtml(stepLabels[s.protocol_step] || s.protocol_step)} · ${escapeHtml(s.server_now_local)} (${escapeHtml(s.settings.timezone)})</div>
@@ -1385,6 +1420,8 @@ function clearSet(slug, i){ _post({ kind: 'clear_set', slug: slug, i: i }); }
 function logAll(slug){ _post({ kind: 'log_all', slug: slug }); }
 function clearAll(slug){ _post({ kind: 'clear_all', slug: slug }); }
 function setDefault(slug, w, r){ _post({ kind: 'set_default', slug: slug, w: w, r: r }); }
+function goDate(d){ parent.postMessage({ type: 'widget-state-change', state: { tab: TAB, date: d } }, '*'); }
+function toggleCal(){ var p = document.getElementById('calPop'); if (p) p.classList.toggle('open'); }
 document.querySelectorAll('.tab').forEach(function(b){ b.addEventListener('click', function(){ switchTab(b.dataset.tab); }); });
 </script>
 </body></html>`;
@@ -1756,46 +1793,76 @@ function setValueText(set: any, r: any): string {
   if (r.progression === "weight") return `${roundForDisplay(Number(set.weight))}${unit} × ${roundForDisplay(Number(set.reps))}회`;
   return `${roundForDisplay(setValue(set, r.progression))}${unit}`;
 }
-function renderTodayExercise(r: any, sess: any, editable: boolean): string {
+function ymd(y: number, m: number, d: number): string {
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+// 달력 팝업 — 그 달 월간 그리드. 날짜 클릭 → goDate(날짜) 로 그 날 보기. (읽기 전용 이동, 탭과 같은 방식)
+function renderCalendarPopup(viewDate: string, today: string): string {
+  const [y, m] = viewDate.split("-").map(Number);
+  const firstWeekday = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const prevM = m === 1 ? ymd(y - 1, 12, 15) : ymd(y, m - 1, 15);
+  const nextM = m === 12 ? ymd(y + 1, 1, 15) : ymd(y, m + 1, 15);
+  const wd = ["일", "월", "화", "수", "목", "금", "토"].map(w => `<div class="cal-wd">${w}</div>`).join("");
+  let cells = "";
+  for (let i = 0; i < firstWeekday; i++) cells += `<div></div>`;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds = ymd(y, m, d);
+    const cls = ds === today ? "cal-d today-d" : ds === viewDate ? "cal-d sel-d" : "cal-d";
+    cells += `<button class="${cls}" onclick="goDate('${ds}')">${d}</button>`;
+  }
+  return `<div class="cal-pop" id="calPop"><div class="cal-hd"><button class="cal-nav" onclick="goDate('${prevM}')">이전</button><span>${y}년 ${m}월</span><button class="cal-nav" onclick="goDate('${nextM}')">다음</button></div><div class="cal-grid">${wd}${cells}</div><button class="cal-today" onclick="goDate('${today}')">오늘로</button></div>`;
+}
+
+function renderTodayExercise(r: any, widgetSess: any, dayRecords: any[] | undefined, editable: boolean, isFuture: boolean): string {
   const prog = r.progression || "weight";
   const unit = unitLabel(r);
   const ts = typeof r.target_sets === "number" ? r.target_sets : defaultTargetSets(prog);
   const wv = typeof r.working_value === "number" ? r.working_value : null;
   const defReps = typeof r.target_reps === "number" ? r.target_reps : (typeof r.target_reps_min === "number" ? r.target_reps_min : null);
-  const doneCount = sess && Array.isArray(sess.sets) ? sess.sets.length : 0;
-  const canAll = prog === "weight" ? (wv !== null && defReps !== null) : (wv !== null);
+  const tag = `<span class="tag dim">${escapeHtml(progressionLabel(prog))}</span>`;
 
+  // 지난/앞날 — 읽기 전용
+  if (!editable) {
+    const sets = dayRecords || [];
+    const head = `<div class="routine-hdr"><div class="routine-name">${escapeHtml(r.display_name)} ${tag}</div><div class="routine-last">${sets.length > 0 ? `${sets.length}세트 기록` : (isFuture ? "예정" : "미기록")}</div></div>`;
+    let body = "";
+    if (sets.length > 0) {
+      for (const st of sets) body += `<div class="tw-set done"><span class="tw-chk">${SVG_CHECK}</span><span class="tw-val">${setValueText(st, r)}</span></div>`;
+    } else {
+      const di = wv !== null ? `기본값 ${ts}세트 × ${roundForDisplay(wv)}${unit}${prog === "weight" && defReps !== null ? ` × ${defReps}회` : ""}` : "";
+      body = `<div class="empty" style="padding:4px 0">${isFuture ? "이 날 계획" : "이 날 기록 없음"}${di ? ` · ${di}` : ""}</div>`;
+    }
+    return `<div class="routine tw">${head}${body}</div>`;
+  }
+
+  // 오늘 — 직접 입력·세트별 완료
+  const doneCount = widgetSess && Array.isArray(widgetSess.sets) ? widgetSess.sets.length : 0;
+  const canAll = prog === "weight" ? (wv !== null && defReps !== null) : (wv !== null);
   let rows = "";
-  let lastDiff: any = null; // 기본값과 다른 마지막 완료 세트
+  let lastDiff: any = null;
   for (let i = 0; i < ts; i++) {
-    const done = doneSetForRow(sess, i);
+    const done = doneSetForRow(widgetSess, i);
     if (done) {
       const cur = prog === "weight" ? Number(done.weight) : Number(setValue(done, prog));
       if (wv !== null && cur !== wv) lastDiff = done;
-      rows += `<div class="tw-set done"><span class="tw-chk">${SVG_CHECK}</span><span class="tw-val">${setValueText(done, r)}</span>${editable ? `<button class="tw-x" onclick="clearSet('${r.slug}',${i})">취소</button>` : ""}</div>`;
-    } else if (editable) {
+      rows += `<div class="tw-set done"><span class="tw-chk">${SVG_CHECK}</span><span class="tw-val">${setValueText(done, r)}</span><button class="tw-x" onclick="clearSet('${r.slug}',${i})">취소</button></div>`;
+    } else {
       const inputs = prog === "weight"
         ? `<input class="tw-in" name="w" type="number" inputmode="decimal" value="${wv ?? ""}" placeholder="무게"><span class="tw-u">${unit}</span><span class="tw-x2">×</span><input class="tw-in" name="r" type="number" inputmode="numeric" value="${defReps ?? ""}" placeholder="횟수"><span class="tw-u">회</span>`
         : `<input class="tw-in" name="v" type="number" inputmode="decimal" value="${wv ?? ""}" placeholder="값"><span class="tw-u">${unit}</span>`;
       rows += `<div class="tw-set" data-set="${r.slug}-${i}"><span class="tw-n">${i + 1}</span>${inputs}<button class="tw-do" onclick="logSet('${r.slug}',${i})">완료</button></div>`;
-    } else {
-      rows += `<div class="tw-set"><span class="tw-n">${i + 1}</span><span class="meta">미기록</span></div>`;
     }
   }
-
   let ask = "";
-  if (editable && lastDiff) {
-    const args = prog === "weight" ? `'${r.slug}',${Number(lastDiff.weight)},${Number(lastDiff.reps)}` : `'${r.slug}',${Number(setValue(lastDiff, prog))}`;
-    ask = `<div class="tw-ask">기본값(${wv}${unit})과 다르게 했어요. 기본값도 이 값으로 바꿀까요? <button class="tw-yes" onclick="setDefault(${args})">예</button> <span class="meta">· 아니면 그냥 두세요</span></div>`;
+  if (lastDiff) {
+    const a = prog === "weight" ? `'${r.slug}',${Number(lastDiff.weight)},${Number(lastDiff.reps)}` : `'${r.slug}',${Number(setValue(lastDiff, prog))}`;
+    ask = `<div class="tw-ask">기본값(${wv}${unit})과 다르게 했어요. 기본값도 이 값으로 바꿀까요? <button class="tw-yes" onclick="setDefault(${a})">예</button> <span class="meta">· 아니면 그냥 두세요</span></div>`;
   }
-
-  const head = `<div class="routine-hdr"><div class="routine-name">${escapeHtml(r.display_name)} <span class="tag dim">${escapeHtml(progressionLabel(prog))}</span></div><div class="routine-last">${doneCount}/${ts} 완료</div></div>`;
-  let actions = "";
-  if (editable) {
-    const allBtn = canAll && doneCount < ts ? `<button class="tw-all" onclick="logAll('${r.slug}')">전체 확인 (기본값 ${ts}세트)</button>` : "";
-    const clearBtn = doneCount > 0 ? `<button class="tw-clear" onclick="clearAll('${r.slug}')">비우기</button>` : "";
-    if (allBtn || clearBtn) actions = `<div class="tw-actions">${allBtn}${clearBtn}</div>`;
-  }
+  const head = `<div class="routine-hdr"><div class="routine-name">${escapeHtml(r.display_name)} ${tag}</div><div class="routine-last">${doneCount}/${ts} 완료</div></div>`;
+  const allBtn = canAll && doneCount < ts ? `<button class="tw-all" onclick="logAll('${r.slug}')">전체 확인 (기본값 ${ts}세트)</button>` : "";
+  const clearBtn = doneCount > 0 ? `<button class="tw-clear" onclick="clearAll('${r.slug}')">비우기</button>` : "";
+  const actions = (allBtn || clearBtn) ? `<div class="tw-actions">${allBtn}${clearBtn}</div>` : "";
   return `<div class="routine tw">${head}${rows}${ask}${actions}</div>`;
 }
 
@@ -1803,24 +1870,33 @@ function renderTodayWorkoutCard(s: any): string {
   const plan = s.active_split_plan;
   let slugs: string[] | null = null;
   let bucketLabel = "";
-  if (plan?.today_bucket?.routine_slugs?.length > 0) { slugs = plan.today_bucket.routine_slugs; bucketLabel = plan.today_bucket.label; }
+  let isRest = false;
+  if (plan?.assignment?.kind === "weekly") {
+    const bkey = plan.assignment.map?.[s.view_weekday];
+    const bucket = bkey ? plan.buckets.find((b: any) => b.key === bkey) : null;
+    if (bucket?.routine_slugs?.length > 0) { slugs = bucket.routine_slugs; bucketLabel = bucket.label; }
+    else isRest = true;
+  } else if (plan?.today_bucket?.routine_slugs?.length > 0) { slugs = plan.today_bucket.routine_slugs; bucketLabel = plan.today_bucket.label; }
   else if (plan?.next_bucket_hint?.routine_slugs?.length > 0) { slugs = plan.next_bucket_hint.routine_slugs; bucketLabel = plan.next_bucket_hint.label; }
 
   const editable = s.is_today !== false;
   const date = s.view_date || s.meals_today?.date || "";
-  let html = `<div class="card today"><h3>오늘의 운동${bucketLabel ? ` · ${escapeHtml(bucketLabel)}` : ""}</h3>`;
-  if (date) html += `<div class="today-date">${escapeHtml(date)}${editable ? "" : " · 지난 기록(읽기 전용)"}</div>`;
+  const today = s.today || date;
+  const isFuture = !!(date && today && date > today);
+  const title = editable ? "오늘의 운동" : (isFuture ? "예정 운동" : "지난 운동");
+
+  let html = `<div class="card today"><div class="today-top"><h3>${title}${bucketLabel ? ` · ${escapeHtml(bucketLabel)}` : ""}</h3><button class="cal-open" onclick="toggleCal()">${SVG_CAL}${escapeHtml(date)}</button></div>`;
+  html += renderCalendarPopup(date, today);
+  if (!editable) html += `<div class="today-date">읽기 전용 · <span class="lnk" onclick="goDate('${today}')">오늘로 가기</span></div>`;
 
   const list: any[] = [];
   if (slugs) for (const sl of slugs) { const r = s.routines.find((x: any) => x?.slug === sl); if (r) list.push(r); }
 
   if (list.length === 0) {
-    const restDay = plan?.today_bucket && plan.today_bucket.key === null;
-    html += `<div class="empty">${restDay ? "오늘은 휴식일이에요." : "오늘 지정된 운동이 없어요 — 아래 '나의 기록'에서 골라 기록하세요."}</div></div>`;
+    html += `<div class="empty">${isRest ? "이 날은 휴식일이에요." : "지정된 운동이 없어요 — 아래 '나의 기록'에서 골라 기록하세요."}</div></div>`;
     return html;
   }
-
-  for (const r of list) html += renderTodayExercise(r, s.view_sessions?.[r.slug] ?? null, editable);
+  for (const r of list) html += renderTodayExercise(r, s.view_sessions?.[r.slug] ?? null, s.day_records?.[r.slug], editable, isFuture);
   html += "</div>";
   return html;
 }
