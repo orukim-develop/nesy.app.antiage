@@ -1139,8 +1139,9 @@ function buildDashboardHtml(tab: string, s: any): string {
   if (tab === "overview") {
     content += renderOverviewCard(s);
   } else if (tab === "exercise") {
+    content += renderTodayWorkoutCard(s);
     content += renderSplitPlanCard(s.active_split_plan, s.routines);
-    content += renderExerciseCard(s.routines, s.recent_activities);
+    content += renderMyRecordsCard(s.routines, s.recent_activities);
     content += renderFactsCard("운동 환경/장비/제약", s.user_facts.exercise);
   } else if (tab === "metrics") {
     content += renderMetricsCard(s.metrics);
@@ -1220,6 +1221,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0
 .fv-k{color:#6b7280;font-weight:600;margin-right:5px}
 .fv-v{color:#374151}
 .fv-nest{padding-left:9px;border-left:2px solid #eef0f3;margin:3px 0}
+.today-date{font-size:11px;color:#9ca3af;margin:-3px 0 8px}
+.today-plan{font-size:12px;color:#4c1d95;background:#f5f3ff;border-radius:4px;padding:3px 8px;display:inline-block;margin-top:3px}
+details>summary{list-style:none}
+summary::-webkit-details-marker{display:none}
+.card-sum{cursor:pointer;font-size:12px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:7px}
+.chev{width:0;height:0;border-left:5px solid #9ca3af;border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .15s}
+details[open] .chev{transform:rotate(90deg)}
+.card-body{margin-top:9px}
 </style></head><body>
 <div class="hdr">
 <div class="step">${escapeHtml(stepLabels[s.protocol_step] || s.protocol_step)} · ${escapeHtml(s.server_now_local)} (${escapeHtml(s.settings.timezone)})</div>
@@ -1593,23 +1602,65 @@ ${memoBlock}
 </div>`;
 }
 
-function renderExerciseCard(routines: any[], activities: any[]): string {
-  let html = '<div class="card"><h3>운동 루틴</h3>';
-  if (routines.length === 0 && activities.length === 0) {
-    html += '<div class="empty">등록된 루틴/활동 없음.</div></div>';
+// 오늘 할 운동의 '기본값'(등록 시 넣은 무게·세트·횟수)을 한 줄로 — 마도서가 정한 게 아니라 사용자가 등록한 값.
+function todayDefaultLine(r: any): string {
+  const unit = r.unit ? escapeHtml(String(r.unit)) : "";
+  const ts = typeof r.target_sets === "number" ? r.target_sets : null;
+  const wv = typeof r.working_value === "number" ? r.working_value : null;
+  const reps = typeof r.target_reps === "number" ? String(r.target_reps)
+    : (typeof r.target_reps_min === "number" && typeof r.target_reps_max === "number" ? `${r.target_reps_min}-${r.target_reps_max}` : null);
+  const parts: string[] = [];
+  if (ts !== null) parts.push(`${ts}세트`);
+  if (wv !== null) parts.push(`${roundForDisplay(wv)}${unit}`);
+  if (r.progression === "weight" && reps !== null) parts.push(`${reps}회`);
+  return parts.join(" × ");
+}
+
+// 위: 오늘 할 운동만 (읽기 — 3단계에서 직접 입력·완료가 붙는다)
+function renderTodayWorkoutCard(s: any, dateLabel?: string): string {
+  const plan = s.active_split_plan;
+  let slugs: string[] | null = null;
+  let bucketLabel = "";
+  if (plan?.today_bucket?.routine_slugs?.length > 0) { slugs = plan.today_bucket.routine_slugs; bucketLabel = plan.today_bucket.label; }
+  else if (plan?.next_bucket_hint?.routine_slugs?.length > 0) { slugs = plan.next_bucket_hint.routine_slugs; bucketLabel = plan.next_bucket_hint.label; }
+
+  const date = dateLabel || s.meals_today?.date || "";
+  let html = `<div class="card today"><h3>오늘의 운동${bucketLabel ? ` · ${escapeHtml(bucketLabel)}` : ""}</h3>`;
+  if (date) html += `<div class="today-date">${escapeHtml(date)}</div>`;
+
+  const list: any[] = [];
+  if (slugs) for (const sl of slugs) { const r = s.routines.find((x: any) => x?.slug === sl); if (r) list.push(r); }
+
+  if (list.length === 0) {
+    const restDay = plan?.today_bucket && plan.today_bucket.key === null;
+    html += `<div class="empty">${restDay ? "오늘은 휴식일이에요." : "오늘 지정된 운동이 없어요 — 아래 '나의 기록'에서 골라 기록하세요."}</div></div>`;
     return html;
   }
-  for (const r of routines) {
-    html += renderRoutineBlock(r);
-  }
-  if (activities.length > 0) {
-    html += `<div class="sub-hdr">최근 7일 자유 활동 ${activities.length}건</div>`;
-    for (const a of activities.slice(0, 5)) {
-      html += `<div class="row"><div class="name">${escapeHtml(a.name)} <span class="meta">(${escapeHtml(a.intensity)})</span></div><div class="val">${a.duration_minutes}분</div></div>`;
-    }
+
+  for (const r of list) {
+    const def = todayDefaultLine(r);
+    const last = formatLastSessionSummary(r.last_session);
+    html += `<div class="routine"><div class="routine-hdr"><div class="routine-name">${escapeHtml(r.display_name)} <span class="tag dim">${escapeHtml(progressionLabel(r.progression))}</span></div><div class="routine-last">${last}</div></div>${def ? `<div class="today-plan">기본값 ${def}</div>` : ""}</div>`;
   }
   html += "</div>";
   return html;
+}
+
+// 아래: 나의 기록 — 등록한 운동 전체. 기본 접힘(<details>), 길어도 화면을 안 잡아먹게.
+function renderMyRecordsCard(routines: any[], activities: any[]): string {
+  let body = "";
+  if (routines.length === 0 && activities.length === 0) {
+    body = '<div class="empty">등록된 루틴/활동 없음.</div>';
+  } else {
+    for (const r of routines) body += renderRoutineBlock(r);
+    if (activities.length > 0) {
+      body += `<div class="sub-hdr">최근 7일 자유 활동 ${activities.length}건</div>`;
+      for (const a of activities.slice(0, 5)) {
+        body += `<div class="row"><div class="name">${escapeHtml(a.name)} <span class="meta">(${escapeHtml(a.intensity)})</span></div><div class="val">${a.duration_minutes}분</div></div>`;
+      }
+    }
+  }
+  return `<div class="card"><details><summary class="card-sum"><span class="chev"></span>나의 기록 (${routines.length})</summary><div class="card-body">${body}</div></details></div>`;
 }
 
 function formatHmFromIso(iso: string, tz: string): string {
