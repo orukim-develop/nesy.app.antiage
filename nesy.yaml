@@ -532,3 +532,15 @@ visualization:
     properties:
       tab:
         type: string
+      date:
+        type: string
+      action:
+        type: object
+        properties:
+          kind: { type: string }
+          slug: { type: string }
+          i: { type: number }
+          w: { type: string }
+          r: { type: string }
+          v: { type: string }
+          nonce: { type: string }

@@ -1107,16 +1107,125 @@ async function checkReminders(data: Data) {
   return { notifications };
 }
 
+// ── 위젯 액션 — '오늘의 운동'에서 화면이 보낸 입력/완료를 기록 ────────────────
+// 안전: 사용자가 화면에 입력·완료한 값만 저장한다. 마도서가 운동량을 정하지 않으며,
+// 기본값(working_value/target_reps) 변경은 사용자가 직접 '예'(set_default)를 누른 경우에만.
+function parseIndex(v: any): number | null {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 && n < 50 ? n : null;
+}
+// 등록된 기본 입력값(working_value / target_reps). 없으면 null(=빈 칸).
+function defaultSetInput(routine: any, prog: string): any {
+  const wv = typeof routine.working_value === "number" ? routine.working_value : null;
+  if (prog === "weight") {
+    const reps = typeof routine.target_reps === "number" ? routine.target_reps
+      : typeof routine.target_reps_min === "number" ? routine.target_reps_min : null;
+    return { weight: wv, reps };
+  }
+  if (prog === "time") return { time: wv };
+  if (prog === "distance") return { distance: wv };
+  if (prog === "reps") return { reps: wv };
+  if (prog === "hold") return { hold: wv };
+  return {};
+}
+function actionToSetInput(action: any, prog: string): any {
+  if (prog === "weight") return { weight: Number(action.w), reps: Number(action.r) };
+  const v = Number(action.v);
+  if (prog === "time") return { time: v };
+  if (prog === "distance") return { distance: v };
+  if (prog === "reps") return { reps: v };
+  if (prog === "hold") return { hold: v };
+  return {};
+}
+async function applyWidgetAction(action: any, data: Data, date: string) {
+  const slug = String(action.slug ?? "").trim();
+  if (!/^[a-z][a-z0-9_]*$/.test(slug)) return;
+  const routine = await data.get(`routine:${slug}`);
+  if (!routine) return;
+  const prog = routine.progression || "weight";
+  const kind = String(action.kind ?? "");
+
+  // 기본값도 바꿀까요? → 사용자가 '예' 했을 때만
+  if (kind === "set_default") {
+    const patch: any = {};
+    const w = Number(action.w);
+    if (Number.isFinite(w) && w >= 0) patch.working_value = w;
+    if (prog === "weight") {
+      const r = Number(action.r);
+      if (Number.isInteger(r) && r > 0) patch.target_reps = r;
+    }
+    if (Object.keys(patch).length > 0) await data.set(`routine:${slug}`, { ...routine, ...patch });
+    return;
+  }
+
+  const key = `session:${slug}:${date}:widget`;
+  let sess: any = await data.get(key);
+  if (!sess || !Array.isArray(sess.sets)) sess = { slug, sets: [], performed_at: `${date}T12:00:00.000Z`, source: "widget" };
+
+  if (kind === "log_set") {
+    const i = parseIndex(action.i);
+    if (i === null) return;
+    const set: any = normalizeSet(actionToSetInput(action, prog), prog); // 빈/잘못된 값이면 throw → 상위 try/catch 가 무시(저장 안 함)
+    set.idx = i;
+    sess.sets = sess.sets.filter((x: any) => x.idx !== i);
+    sess.sets.push(set);
+    sess.sets.sort((a: any, b: any) => (a.idx ?? 0) - (b.idx ?? 0));
+    await data.set(key, sess);
+  } else if (kind === "clear_set") {
+    const i = parseIndex(action.i);
+    if (i === null) return;
+    sess.sets = sess.sets.filter((x: any) => x.idx !== i);
+    if (sess.sets.length === 0) await data.delete(key);
+    else await data.set(key, sess);
+  } else if (kind === "log_all") {
+    const di = defaultSetInput(routine, prog);
+    const vals = prog === "weight" ? [di.weight, di.reps] : [Object.values(di)[0]];
+    if (vals.some((x) => typeof x !== "number")) return; // 기본값 미설정이면 전체확인 불가
+    const ts = typeof routine.target_sets === "number" ? routine.target_sets : defaultTargetSets(prog);
+    const sets: any[] = [];
+    for (let i = 0; i < ts; i++) { const set: any = normalizeSet(di, prog); set.idx = i; sets.push(set); }
+    sess.sets = sets;
+    await data.set(key, sess);
+  } else if (kind === "clear_all") {
+    await data.delete(key);
+  }
+}
+async function loadWidgetSessions(data: Data, date: string, routines: any[]): Promise<Record<string, any>> {
+  const out: Record<string, any> = {};
+  await Promise.all(routines.map(async (r: any) => {
+    const sess = await data.get(`session:${r.slug}:${date}:widget`);
+    if (sess && Array.isArray(sess.sets)) out[r.slug] = sess;
+  }));
+  return out;
+}
+
 async function renderDashboard(args: any, data: Data) {
-  const tab = String(args.tab ?? "overview");
-  const s = await getState(data);
-  return { html: buildDashboardHtml(tab, s) };
+  const settings = await getSettings(data);
+  const today = dateInTz(settings.timezone);
+  const viewDate = typeof args.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.date) ? args.date : today;
+
+  // 화면이 보낸 행동(입력/완료/기본값변경) 처리 — nonce 로 멱등(60초 자동 새로고침에 재실행 안 됨)
+  if (args.action && typeof args.action === "object") {
+    const nonce = String((args.action as any).nonce ?? "");
+    const last = await data.get("__widget_last_nonce");
+    if (nonce && nonce !== last) {
+      try { await applyWidgetAction(args.action, data, viewDate); } catch { /* 잘못된 입력은 조용히 무시 */ }
+      await data.set("__widget_last_nonce", nonce);
+    }
+  }
+
+  const s: any = await getState(data);
+  s.view_date = viewDate;
+  s.is_today = viewDate === today;
+  s.view_sessions = await loadWidgetSessions(data, viewDate, s.routines);
+  return { html: buildDashboardHtml(String(args.tab ?? "overview"), s) };
 }
 
 // 아이콘 — 이모지는 일부 환경에서 [ ] 로 깨져, 어디서나 렌더되는 인라인 SVG 로 대체.
 const SVG_TARGET = `<svg class="ic ic-tgt" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.4"/></svg>`;
 const SVG_NOTE = `<svg class="ic ic-note" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 4.5h9M3.5 8h9M3.5 11.5h5.5"/></svg>`;
 const SVG_WARN = `<svg class="ic ic-warn" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"><path d="M8 2.6l5.4 9.8H2.6z"/><path d="M8 6.6v3"/><path d="M8 11.4h.01"/></svg>`;
+const SVG_CHECK = `<svg class="ic" style="color:#16a34a" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 8.6l3 3 6.6-7.2"/></svg>`;
 
 function buildDashboardHtml(tab: string, s: any): string {
   const stepLabels: Record<string, string> = {
@@ -1229,6 +1338,23 @@ summary::-webkit-details-marker{display:none}
 .chev{width:0;height:0;border-left:5px solid #9ca3af;border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .15s}
 details[open] .chev{transform:rotate(90deg)}
 .card-body{margin-top:9px}
+.tw-set{display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid #f4f4f6;flex-wrap:wrap}
+.tw-set:last-child{border-bottom:none}
+.tw-n{width:15px;color:#9ca3af;font-size:11px;flex-shrink:0;text-align:center}
+.tw-in{width:58px;padding:5px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;font-family:inherit;background:#fff;color:#111827;text-align:center}
+.tw-in:focus{outline:none;border-color:#7c3aed}
+.tw-u{font-size:11px;color:#6b7280}
+.tw-x2{color:#9ca3af;font-size:11px}
+.tw-do{margin-left:auto;padding:5px 13px;border:none;border-radius:6px;background:#7c3aed;color:#fff;font-size:12px;font-weight:600;font-family:inherit;cursor:pointer}
+.tw-do:active{background:#6d28d9}
+.tw-chk{display:inline-flex;flex-shrink:0}
+.tw-val{font-size:13px;color:#15803d;font-weight:600}
+.tw-x{margin-left:auto;padding:4px 9px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;color:#9ca3af;font-size:11px;font-family:inherit;cursor:pointer}
+.tw-actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.tw-all{padding:6px 12px;border:1px dashed #c4b5fd;border-radius:6px;background:#f5f3ff;color:#6d28d9;font-size:12px;font-family:inherit;cursor:pointer}
+.tw-clear{padding:6px 12px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;color:#9ca3af;font-size:12px;font-family:inherit;cursor:pointer}
+.tw-ask{margin-top:8px;padding:7px 9px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:12px;color:#92400e;line-height:1.5}
+.tw-yes{padding:3px 12px;border:none;border-radius:5px;background:#f59e0b;color:#fff;font-size:12px;font-family:inherit;cursor:pointer}
 </style></head><body>
 <div class="hdr">
 <div class="step">${escapeHtml(stepLabels[s.protocol_step] || s.protocol_step)} · ${escapeHtml(s.server_now_local)} (${escapeHtml(s.settings.timezone)})</div>
@@ -1240,9 +1366,26 @@ ${tabs.map(([t, l]) => `<button class="tab ${t === tab ? "active" : ""}" data-ta
 ${content || '<div class="card"><div class="empty">데이터 없음.</div></div>'}
 <div class="scope">이 마도서는 <b>기록·시각화 전용</b>입니다 · 조언·추천을 하지 않습니다<br>조언이 필요하면 AI가 마도서와 분리해 자기 책임으로 말합니다</div>
 <script>
-document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => {
-  parent.postMessage({ type: 'widget-state-change', state: { tab: b.dataset.tab } }, '*');
-}));
+var TAB = ${JSON.stringify(tab)};
+var VIEW_DATE = ${JSON.stringify(s.view_date || "")};
+function _nonce(){ return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function _post(action){
+  var state = { tab: TAB, date: VIEW_DATE };
+  if (action) { action.nonce = _nonce(); state.action = action; }
+  parent.postMessage({ type: 'widget-state-change', state: state }, '*');
+}
+function switchTab(t){ TAB = t; _post(null); }
+function logSet(slug, i){
+  var row = document.querySelector('[data-set="' + slug + '-' + i + '"]');
+  if (!row) return;
+  var g = function(n){ var el = row.querySelector('[name=' + n + ']'); return el ? el.value : undefined; };
+  _post({ kind: 'log_set', slug: slug, i: i, w: g('w'), r: g('r'), v: g('v') });
+}
+function clearSet(slug, i){ _post({ kind: 'clear_set', slug: slug, i: i }); }
+function logAll(slug){ _post({ kind: 'log_all', slug: slug }); }
+function clearAll(slug){ _post({ kind: 'clear_all', slug: slug }); }
+function setDefault(slug, w, r){ _post({ kind: 'set_default', slug: slug, w: w, r: r }); }
+document.querySelectorAll('.tab').forEach(function(b){ b.addEventListener('click', function(){ switchTab(b.dataset.tab); }); });
 </script>
 </body></html>`;
 }
@@ -1602,31 +1745,71 @@ ${memoBlock}
 </div>`;
 }
 
-// 오늘 할 운동의 '기본값'(등록 시 넣은 무게·세트·횟수)을 한 줄로 — 마도서가 정한 게 아니라 사용자가 등록한 값.
-function todayDefaultLine(r: any): string {
-  const unit = r.unit ? escapeHtml(String(r.unit)) : "";
-  const ts = typeof r.target_sets === "number" ? r.target_sets : null;
+// 위: 오늘 할 운동만. 오늘이면 직접 입력·세트별 완료, 지난 날이면 그날 기록을 읽기 전용으로.
+function unitLabel(r: any): string { return r.unit ? escapeHtml(String(r.unit)) : ""; }
+function doneSetForRow(sess: any, i: number): any {
+  if (!sess || !Array.isArray(sess.sets)) return null;
+  return sess.sets.find((x: any) => x.idx === i) ?? null;
+}
+function setValueText(set: any, r: any): string {
+  const unit = unitLabel(r);
+  if (r.progression === "weight") return `${roundForDisplay(Number(set.weight))}${unit} × ${roundForDisplay(Number(set.reps))}회`;
+  return `${roundForDisplay(setValue(set, r.progression))}${unit}`;
+}
+function renderTodayExercise(r: any, sess: any, editable: boolean): string {
+  const prog = r.progression || "weight";
+  const unit = unitLabel(r);
+  const ts = typeof r.target_sets === "number" ? r.target_sets : defaultTargetSets(prog);
   const wv = typeof r.working_value === "number" ? r.working_value : null;
-  const reps = typeof r.target_reps === "number" ? String(r.target_reps)
-    : (typeof r.target_reps_min === "number" && typeof r.target_reps_max === "number" ? `${r.target_reps_min}-${r.target_reps_max}` : null);
-  const parts: string[] = [];
-  if (ts !== null) parts.push(`${ts}세트`);
-  if (wv !== null) parts.push(`${roundForDisplay(wv)}${unit}`);
-  if (r.progression === "weight" && reps !== null) parts.push(`${reps}회`);
-  return parts.join(" × ");
+  const defReps = typeof r.target_reps === "number" ? r.target_reps : (typeof r.target_reps_min === "number" ? r.target_reps_min : null);
+  const doneCount = sess && Array.isArray(sess.sets) ? sess.sets.length : 0;
+  const canAll = prog === "weight" ? (wv !== null && defReps !== null) : (wv !== null);
+
+  let rows = "";
+  let lastDiff: any = null; // 기본값과 다른 마지막 완료 세트
+  for (let i = 0; i < ts; i++) {
+    const done = doneSetForRow(sess, i);
+    if (done) {
+      const cur = prog === "weight" ? Number(done.weight) : Number(setValue(done, prog));
+      if (wv !== null && cur !== wv) lastDiff = done;
+      rows += `<div class="tw-set done"><span class="tw-chk">${SVG_CHECK}</span><span class="tw-val">${setValueText(done, r)}</span>${editable ? `<button class="tw-x" onclick="clearSet('${r.slug}',${i})">취소</button>` : ""}</div>`;
+    } else if (editable) {
+      const inputs = prog === "weight"
+        ? `<input class="tw-in" name="w" type="number" inputmode="decimal" value="${wv ?? ""}" placeholder="무게"><span class="tw-u">${unit}</span><span class="tw-x2">×</span><input class="tw-in" name="r" type="number" inputmode="numeric" value="${defReps ?? ""}" placeholder="횟수"><span class="tw-u">회</span>`
+        : `<input class="tw-in" name="v" type="number" inputmode="decimal" value="${wv ?? ""}" placeholder="값"><span class="tw-u">${unit}</span>`;
+      rows += `<div class="tw-set" data-set="${r.slug}-${i}"><span class="tw-n">${i + 1}</span>${inputs}<button class="tw-do" onclick="logSet('${r.slug}',${i})">완료</button></div>`;
+    } else {
+      rows += `<div class="tw-set"><span class="tw-n">${i + 1}</span><span class="meta">미기록</span></div>`;
+    }
+  }
+
+  let ask = "";
+  if (editable && lastDiff) {
+    const args = prog === "weight" ? `'${r.slug}',${Number(lastDiff.weight)},${Number(lastDiff.reps)}` : `'${r.slug}',${Number(setValue(lastDiff, prog))}`;
+    ask = `<div class="tw-ask">기본값(${wv}${unit})과 다르게 했어요. 기본값도 이 값으로 바꿀까요? <button class="tw-yes" onclick="setDefault(${args})">예</button> <span class="meta">· 아니면 그냥 두세요</span></div>`;
+  }
+
+  const head = `<div class="routine-hdr"><div class="routine-name">${escapeHtml(r.display_name)} <span class="tag dim">${escapeHtml(progressionLabel(prog))}</span></div><div class="routine-last">${doneCount}/${ts} 완료</div></div>`;
+  let actions = "";
+  if (editable) {
+    const allBtn = canAll && doneCount < ts ? `<button class="tw-all" onclick="logAll('${r.slug}')">전체 확인 (기본값 ${ts}세트)</button>` : "";
+    const clearBtn = doneCount > 0 ? `<button class="tw-clear" onclick="clearAll('${r.slug}')">비우기</button>` : "";
+    if (allBtn || clearBtn) actions = `<div class="tw-actions">${allBtn}${clearBtn}</div>`;
+  }
+  return `<div class="routine tw">${head}${rows}${ask}${actions}</div>`;
 }
 
-// 위: 오늘 할 운동만 (읽기 — 3단계에서 직접 입력·완료가 붙는다)
-function renderTodayWorkoutCard(s: any, dateLabel?: string): string {
+function renderTodayWorkoutCard(s: any): string {
   const plan = s.active_split_plan;
   let slugs: string[] | null = null;
   let bucketLabel = "";
   if (plan?.today_bucket?.routine_slugs?.length > 0) { slugs = plan.today_bucket.routine_slugs; bucketLabel = plan.today_bucket.label; }
   else if (plan?.next_bucket_hint?.routine_slugs?.length > 0) { slugs = plan.next_bucket_hint.routine_slugs; bucketLabel = plan.next_bucket_hint.label; }
 
-  const date = dateLabel || s.meals_today?.date || "";
+  const editable = s.is_today !== false;
+  const date = s.view_date || s.meals_today?.date || "";
   let html = `<div class="card today"><h3>오늘의 운동${bucketLabel ? ` · ${escapeHtml(bucketLabel)}` : ""}</h3>`;
-  if (date) html += `<div class="today-date">${escapeHtml(date)}</div>`;
+  if (date) html += `<div class="today-date">${escapeHtml(date)}${editable ? "" : " · 지난 기록(읽기 전용)"}</div>`;
 
   const list: any[] = [];
   if (slugs) for (const sl of slugs) { const r = s.routines.find((x: any) => x?.slug === sl); if (r) list.push(r); }
@@ -1637,11 +1820,7 @@ function renderTodayWorkoutCard(s: any, dateLabel?: string): string {
     return html;
   }
 
-  for (const r of list) {
-    const def = todayDefaultLine(r);
-    const last = formatLastSessionSummary(r.last_session);
-    html += `<div class="routine"><div class="routine-hdr"><div class="routine-name">${escapeHtml(r.display_name)} <span class="tag dim">${escapeHtml(progressionLabel(r.progression))}</span></div><div class="routine-last">${last}</div></div>${def ? `<div class="today-plan">기본값 ${def}</div>` : ""}</div>`;
-  }
+  for (const r of list) html += renderTodayExercise(r, s.view_sessions?.[r.slug] ?? null, editable);
   html += "</div>";
   return html;
 }
