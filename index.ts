@@ -1215,6 +1215,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0
 .ic-tgt{color:#7c3aed}
 .ic-note{color:#9ca3af}
 .ic-warn{color:#dc2626}
+.fv{font-size:11px;line-height:1.55}
+.fv-row{margin:3px 0}
+.fv-k{color:#6b7280;font-weight:600;margin-right:5px}
+.fv-v{color:#374151}
+.fv-nest{padding-left:9px;border-left:2px solid #eef0f3;margin:3px 0}
 </style></head><body>
 <div class="hdr">
 <div class="step">${escapeHtml(stepLabels[s.protocol_step] || s.protocol_step)} · ${escapeHtml(s.server_now_local)} (${escapeHtml(s.settings.timezone)})</div>
@@ -1725,24 +1730,57 @@ function renderFactsCard(title: string, facts: any[]): string {
     return html;
   }
   for (const f of facts) {
-    const valueStr = factValueSummary(f.value);
-    // 짧은 스칼라(`{v: 2.5}` 등) 는 inline, 그 외(목록/구조체)는 stacked 로 값을 다음 줄에
-    const isShort = valueStr.length <= 18 && !valueStr.includes(",") && !valueStr.includes("{");
-    if (isShort) {
-      html += `<div class="row"><div class="name">${escapeHtml(f.label)}</div><div class="val">${escapeHtml(valueStr)}</div></div>`;
+    // 한 줄로 보여줄 수 있는 짧은 스칼라(`{v: 2.5}` 등)는 inline, 그 외는 stacked 로 깔끔히 풀어서
+    const inline = factInlineScalar(f.value);
+    if (inline !== null && inline.length <= 24 && !inline.includes("\n")) {
+      html += `<div class="row"><div class="name">${escapeHtml(f.label)}</div><div class="val">${escapeHtml(inline)}</div></div>`;
     } else {
-      html += `<div class="row stacked"><div class="name">${escapeHtml(f.label)}</div><div class="val">${escapeHtml(valueStr)}</div></div>`;
+      html += `<div class="row stacked"><div class="name">${escapeHtml(f.label)}</div><div class="val fv">${renderFactValueHtml(f.value)}</div></div>`;
     }
   }
   html += "</div>";
   return html;
 }
 
-function factValueSummary(v: any): string {
-  if (v === null || v === undefined) return "—";
-  if (typeof v !== "object") return String(v);
+function isScalarVal(v: any): boolean {
+  return v === null || v === undefined || typeof v !== "object";
+}
+function scalarText(v: any): string {
+  return v === null || v === undefined ? "—" : String(v);
+}
+// `{ v: 스칼라 }` 또는 스칼라처럼 한 줄로 보여줄 수 있으면 그 문자열, 아니면 null
+function factInlineScalar(v: any): string | null {
+  if (isScalarVal(v)) return scalarText(v);
+  if (typeof v === "object" && !Array.isArray(v)) {
+    const keys = Object.keys(v);
+    if (keys.length === 1 && "v" in v && isScalarVal((v as any).v)) return scalarText((v as any).v);
+  }
+  return null;
+}
+// 코드형 키(snake_case·영문)를 사람이 읽기 좋게: 밑줄 → 공백
+function humanizeKey(k: string): string {
+  return String(k).replace(/_/g, " ").trim();
+}
+// 저장된 사실 값을 'JSON 코드'가 아니라 사람이 읽는 글로 — 중괄호/따옴표/별표 없이.
+function renderFactValueHtml(v: any, depth = 0): string {
+  if (isScalarVal(v)) return escapeHtml(scalarText(v));
+  if (Array.isArray(v)) {
+    if (v.every(isScalarVal)) return escapeHtml(v.map(scalarText).join(", "));
+    return v.map(it => `<div class="fv-nest">${renderFactValueHtml(it, depth + 1)}</div>`).join("");
+  }
   const keys = Object.keys(v);
-  if (keys.length === 1 && "v" in v) return String(v.v);
-  if (keys.length === 1 && Array.isArray(v.items)) return v.items.map((it: any) => typeof it === "object" ? JSON.stringify(it) : String(it)).join(", ");
-  try { return JSON.stringify(v); } catch { return "[object]"; }
+  if (keys.length === 1 && "v" in v) return escapeHtml(scalarText((v as any).v));
+  if (keys.length === 1 && Array.isArray((v as any).items)) return renderFactValueHtml((v as any).items, depth + 1);
+  if (depth > 4) return escapeHtml("…");
+  return keys.map(k => {
+    const val = (v as any)[k];
+    const kHtml = `<span class="fv-k">${escapeHtml(humanizeKey(k))}</span>`;
+    if (isScalarVal(val)) {
+      return `<div class="fv-row">${kHtml}<span class="fv-v">${escapeHtml(scalarText(val))}</span></div>`;
+    }
+    if (Array.isArray(val) && val.every(isScalarVal)) {
+      return `<div class="fv-row">${kHtml}<span class="fv-v">${escapeHtml(val.map(scalarText).join(", "))}</span></div>`;
+    }
+    return `<div class="fv-row">${kHtml}<div class="fv-nest">${renderFactValueHtml(val, depth + 1)}</div></div>`;
+  }).join("");
 }
