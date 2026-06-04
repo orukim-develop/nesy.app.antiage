@@ -14,6 +14,9 @@ type Progression = typeof PROGRESSIONS[number];
 const SPLIT_KINDS = ["weekly", "sequence", "freestyle"] as const;
 const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 
+// 루틴 블록 종류 (v2). 알려진 종류는 위젯이 예쁘게 그리고, 모르는 종류는 custom 처럼 폴백 렌더 → 어떤 방식도 막히지 않음.
+const BLOCK_KINDS = ["straight", "range", "superset", "circuit", "amrap", "emom", "interval", "pyramid", "dropset", "single", "activity", "custom"] as const;
+
 const AI_RULES = [
   "★ 이 마도서는 '기록' 과 '한눈에 보기(시각화)' 전용이다. 마도서 이름으로 의학·식이·운동 조언/추천/처방/식단작성 절대 금지 — 마도서의 어떤 출력값도 조언이 아니다. 사용자가 적어달라고 한 사실만 적고, 현재 상태와 추이만 보여준다. 다음 무게·칼로리·식단·운동량을 마도서가 정해주지 않는다. 모든 도구 응답에 _guard 가 동봉된다 — '몰랐다' 는 통하지 않는다.",
   "★ 조언 책임 분리(필수) — 마도서는 어떤 조언에도 책임이 없고, 조언의 책임은 전적으로 AI(너) 본인에게 있다. AI 가 굳이 조언하려면 마도서 답변과 분리한 뒤, 응답에 동봉된 _guard.disclaimer 문구를 사용자에게 그대로 먼저 보여주고 말해야 한다. disclaimer 없이는 어떤 조언도 금지. 마도서가 추천하는 것처럼 말하지 말 것. 의학적 내용은 전문가(의사·영양사 등) 상담을 반드시 함께 권한다.",
@@ -21,18 +24,19 @@ const AI_RULES = [
   "goal 이 비어있으면 set_goal 부터 — goal 은 사용자가 말한 목표 문장을 그대로 기록만 한다.",
   "사용자가 명시적으로 말한 항목만 등록 — 임의 등록·임의 식단·임의 측정값 생성 절대 금지.",
   "시각·날짜는 settings.timezone 기준 — 추측 금지.",
-  "★ 사용자 앞 발화는 사용자 발화 언어 그대로의 자연어로. 한국어 화자면 한국어, 영어 화자면 영어, 다른 언어면 그 언어. slug, snake_case 식별자, JSON 키, 도구 이름(define_*/log_* 등), axis/progression/kind 의 영어 코드값(exercise/health_metric/weight/time/weekly 등) 절대 노출 금지. 도구 호출은 내부에서만, 사용자에겐 자연어 라벨/display_name 으로 풀어쓴다. 위반 시 사용자가 '코드처럼 말한다' 며 신뢰 잃음.",
+  "★ 사용자 앞 발화는 사용자 발화 언어 그대로의 자연어로. 한국어 화자면 한국어, 영어 화자면 영어, 다른 언어면 그 언어. slug, snake_case 식별자, JSON 키, 도구 이름(define_*/log_* 등), axis/progression/blockKind 의 영어 코드값(exercise/health_metric/weight/time/weekly/straight/superset/amrap 등)·block_id 절대 노출 금지. 도구 호출은 내부에서만, 사용자에겐 자연어 라벨/display_name 으로 풀어쓴다. 위반 시 사용자가 '코드처럼 말한다' 며 신뢰 잃음.",
   "user_fact 등록 전 사용자 발화 언어로 분류 의도 명시 후 합의 (영문 axis 값 노출 금지). 축 자연어 표현 예시 — 한국어: exercise='운동 환경/장비/제약', health_metric='건강 관련 정보(알레르기·복용약·만성질환 등)', diet_reminder='식단 제약/알람 관련', baseline='기본 정보(직업·수면·생활패턴 등)'. 영어: exercise='workout environment/equipment/constraints', health_metric='health-related info (allergies, meds, conditions)', diet_reminder='diet constraints / reminders', baseline='baseline info (job, sleep, lifestyle)'. 다른 언어는 의미 보존하며 그 언어로 자연 번역. 좋은 예(한): '이거 운동 환경 정보로 저장할게요 — 헬스장 최소 증분 2.5kg' / 좋은 예(영): 'Logging this as workout environment — gym minimum plate increment 2.5kg' / 나쁜 예: 'exercise 카테고리에 min_plate_increment_kg 으로 넣을게요'.",
   "축이 모호하면 두 선택지를 사용자 발화 언어로 풀어서 직접 질문 — AI 단독 결정 금지.",
   "운동 등록 시 진척 축 사용자 발화 언어로 자연스럽게 합의 — 무게↑ / 시간↓ / 거리↑ / 횟수↑ / 유지시간↑ 중 어느 축인지 (한국어 예 '무게 늘리기 / 시간 줄이기 / 거리 늘리기 / 횟수 늘리기 / 유지 시간 늘리기', 영어 예 'add weight / cut time / extend distance / more reps / longer hold'). 'progression=weight' 같이 코드값 노출 금지. 표준 인체 가정 금지 — 다리/팔 없는 사용자도 본인이 가능한 형태(기어가기 등) 등록 가능.",
   "운동 등록 시 계획된 세트수·횟수(또는 범위) 사용자 발화 언어로 함께 합의 — 무게/횟수 진척이면 횟수도 같이(한국어 예 '3세트 5회' 또는 '3세트 8~12회 범위', 영어 예 '3 sets of 5 reps' 또는 '3 sets of 8-12 reps'), 시간/거리/유지시간 진척이면 세트수만 자연스럽게 (보통 1세트). 'target_sets=3' 같이 코드값 노출 금지. 사용자가 묻지 않으면 기본값 사용 OK.",
   "진척 추적 대상 vs 자유 활동 분류 모호하면 사용자 발화 언어로 직접 질문 (한국어 예 '이거 진척 추적할까요, 아니면 그냥 활동 기록만 할까요?', 영어 예 'Track this as progression, or just log it as an activity?'). 축구·테니스·등산 같은 스포츠는 보통 log_activity 가 자연스럽지만, 사용자가 '시간 늘리기' / '거리 늘리기' 같은 축으로 진척 추적 원하면 적절한 progression 으로 루틴 등록도 가능 — 사용자 의도 확인 후.",
   "RPE 는 1~10 (높을수록 힘듦) — 사용자에게는 RPE 용어 노출 금지, 사용자 언어로 풀어 묻기 (한국어 '힘들었음 점수', 영어 'how hard it felt (1-10)').",
-  "세션 기록 시 progression 추론과 분리되는 3가지 케이스 자동 인지 — (a) 워밍업 세트는 sets[].is_warmup=true (b) 컨디션 안 좋아 그날만 가볍게 한 디로드 세션은 is_deload=true (c) 여러 운동을 한 묶음으로 한 슈퍼셋/자이언트셋은 같은 superset_group 키 ('ss-<짧은랜덤>' 형식, AI 가 생성) 로 묶을 routine 들 각각 log_routine_session. 이 표시들은 추이(progression_state) 계산에서 자동 분리되어 운동 기록이 왜곡되지 않음. 사용자에게는 코드값/필드명 노출 금지, 사용자 발화 언어로 자연스럽게 확인 — 한국어 예 '앞 2세트는 워밍업으로 기록할까요?' / '오늘은 디로드 데이로 기록할게요 — progression 추적엔 영향 없어요' / '벤치+푸시업 슈퍼셋으로 묶을게요'. 영어 예 'Mark the first 2 sets as warmup?' / 'Logging today as a deload — won\\'t affect progression' / 'Grouping bench+pushup as a superset'.",
-  "운동 흐름 — ① 등록(define_routine_exercise) → ② 묶음(define_split_plan, 선택) → ③ 실행 기록(log_routine_session). 마도서는 다음 목표를 자동으로 계산·추천하지 않는다. 사용자가 스스로 '다음엔 X 해볼래' 라고 다음 목표를 말하면 그 말을 update_routine_state 의 next_session_goal 에 그대로 기록만 한다 (source=manual). 마도서가 다음 무게/시간/거리를 제안하지 말 것.",
-  "working_value(현재 능력치) 는 사용자가 스스로 밝힌 '현재 기준값' — 기록·표시 전용. 사용자가 '현재 능력치를 X 로 해줘' 라고 명시할 때만 update_routine_state 로 갱신. 마도서가 갱신을 권하거나 자동 갱신하지 않는다. 'working_value' 코드값 노출 금지 — '현재 능력치' 처럼 자연어로.",
+  "실행 기록(log_workout) 시 progression 추론과 분리되는 케이스 자동 인지 — (a) 워밍업 세트는 sets[].is_warmup=true (b) 컨디션 안 좋아 그날만 가볍게 한 날은 세션 전체 is_deload=true. 이 표시는 추이(progression_state) 계산에서 자동 분리되어 기록이 왜곡되지 않음. 슈퍼셋/서킷은 루틴 정의(define_routine)의 block kind=superset/circuit 으로 이미 구조화되어 있으니, 기록 시 같은 block_id 의 entries 에 각 운동을 넣는다 (옛 superset_group 꼬리표 방식 폐기). 사용자에게는 코드값/필드명 노출 금지, 사용자 발화 언어로 자연스럽게 확인 — 한국어 예 '앞 2세트는 워밍업으로 기록할까요?' / '오늘은 컨디션 난조라 가볍게 한 날로 기록할게요 — 추이엔 영향 없어요'. 영어 예 'Mark the first 2 sets as warmup?' / 'Logging today as an easy/deload day — won\\'t affect the trend'.",
+  "운동 흐름 — ① 운동 등록(define_exercise) → ② 루틴 구성(define_routine, 선택) → ③ 배치(define_schedule, 선택) → ④ 실행 기록(log_workout). 마도서는 다음 목표를 자동으로 계산·추천하지 않는다. 사용자가 스스로 '다음엔 X 해볼래' 라고 다음 목표를 말하면 그 말을 update_exercise 의 next_session_goal 에 그대로 기록만 한다 (source=manual). 마도서가 다음 무게/시간/거리를 제안하지 말 것.",
+  "루틴(define_routine)은 사용자 자연어를 AI 가 blocks 로 구조화하는 것 — 사용자에게 문법/형식을 묻지 말 것. 사용자가 '스쿼트 5×5 하고 벤치랑 로우 슈퍼셋 3라운드' 처럼 말하면 원문을 source_text 에 그대로 보관하고, 각 동작을 알맞은 block kind(straight 일반세트 / range 횟수범위 / superset 슈퍼셋 / circuit 서킷 / amrap 시간내최대 / emom 매분 / interval 인터벌 / pyramid 피라미드 / dropset 드롭세트 / single 단일 / activity 일반활동)로 만든다. 딱 맞는 종류가 없으면 kind='custom' + note(자연어 설명) 로 — 어떤 방식도 기록 거부 금지. 슈퍼셋/서킷은 한 block 의 items 에 여러 운동을 넣어 표현. block 의 운동은 먼저 define_exercise 로 등록돼 있어야 한다. block 의 kind/block_id/slug 는 사용자에게 절대 노출 금지 — label(자연어)로만 말한다.",
+  "baseline_value(현재 기준값) 는 사용자가 밝힌 '현재 능력치' — 운동(exercise)에 붙고 그 운동을 쓰는 모든 루틴에 자동 반영. 위젯 입력 기본값으로 쓰이며 기록·표시 전용. ★ 사용자가 기준값보다 잘하면(시간 진척은 더 빠르면) 위젯/대화에서 '현재 기준값을 그 값으로 바꿀까요?' 라고 묻는 게 기본 동작이다 — 단 (a) 사용자가 '예/그래' 라고 확인할 때만 update_exercise 의 baseline_value 로 갱신, (b) 마도서가 '다음엔 더 하라' 는 식의 목표를 제안하지 말 것 — 실제로 한 값을 반영만 한다. 자동 갱신 금지. 'baseline_value' 코드값 노출 금지 — '현재 기준값/능력치' 처럼 자연어로.",
   "routine.memo 는 사용자가 남기는 자유 메모 — 기록·표시 전용. AI 가 메모를 근거로 증량·디로드·식단 같은 조언을 마도서 이름으로 하지 말 것 (조언이 필요하면 마도서 밖, AI 본인 판단으로 분리해 말한다). 메모 등록/수정은 '루틴 메모' 처럼 자연어 합의 후 update_routine_state.",
-  "분할 등록 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 분할 등록 안 함.",
+  "배치 등록(define_schedule) 시 종류 사용자 발화 언어로 자연스럽게 합의 — 요일별 / 순환 / 그룹만 정해두고 매번 골라하기 (한국어 예 '요일별(월=가슴/화=등) / 순환(A→B→C→D 순서대로 도는) / 그룹만 정해두고 매번 골라하기', 영어 예 'weekly schedule / rotation cycle / grouped pick-and-choose'). 배치의 묶음은 개별 운동이 아니라 루틴(routine_v2_slugs)을 가리킨다. 'weekly/sequence/freestyle' 같이 영어 코드값 노출 금지. 매번 자유롭게 골라하는 체리피커는 배치 등록 안 함.",
   "★ 기록 수정/삭제 — 사용자가 '아까 등록한 점심 칼로리 잘못 적었어' / '방금 측정한 혈압 지워줘' / '오늘 운동 세션 잘못 입력' 같이 말하면, get_state 의 meals_today.items[].id / metrics[].latest_id / routines[].last_session.id / recent_activities[].id 로 해당 기록의 id 를 찾아 처리. 끼니(meal) 수정은 log_meal({id: 'meal:...', ...새 값}) 로 upsert — 단순. 그 외 기록(measure/session/activity) 수정은 delete_entity({kind, id}) 후 다시 log_* — 별도 update 도구 없음. session 삭제는 해당 기록만 지운다. id 는 'meal:...' / 'measure:slug:...' / 'session:slug:...' / 'activity:...' 형식의 전체 key — 사용자에게 절대 노출 금지, 내부에서만 사용. 사용자에겐 자연어로 — 한국어 예 '아까 등록한 점심(450kcal) 을 600kcal 로 수정할게요' / 영어 예 'Updating the lunch you logged earlier (450 kcal) to 600 kcal'.",
   "★ 끼니 프리셋(meal_preset) — 사용자가 자주 먹는 끼를 한 번 정의해두고 다음에 빠르게 호출. 두 시점: (a) 등록: 사용자가 '이거 자주 먹어, 다음엔 빨리 등록하게 저장해줘' 같이 말하면 log_meal 호출 시 as_preset_slug 추가 — 끼 기록 + 프리셋 동시 저장. (b) 사용: get_state.meal_presets[] 에서 사용자 발화에 해당하는 프리셋 식별 후 log_meal({from_preset_slug: '...'}) — 영양값 자동 채움 (호출 args 가 명시한 값은 override 우선). 프리셋 slug 는 영문 snake_case 라 사용자 노출 금지 — 사용자에겐 프리셋 'name' 으로 합의. 한국어 예 '아침 정식(오트밀+그릭요거트, 400kcal) 으로 등록할게요' / 영어 예 'Logging breakfast as your usual oatmeal+greek yogurt (400 kcal)'. 프리셋 등록 전 반드시 사용자 합의 — 임의 등록 금지. 삭제는 delete_entity({kind:'meal_preset', id: slug}).",
   "set_size — 1세트의 고정 크기(카디오 인터벌·격투 라운드 등) 를 기록·표시하기 위한 값 (예 '세트당 5분'). 위젯에 '세트당 N{unit}' 으로 표시됨. 사용자에게 코드값 노출 금지, 자연어로 합의. display_name 에 같은 정보(분/세트 시간)가 중복되면 update_routine_state 로 라벨 정리 권유 (예 'RowErg (5분짜리)' → 'RowErg').",
@@ -74,8 +78,12 @@ export async function run({ input, data }: {
 async function dispatchTool(tool: string, args: Record<string, any>, data: Data): Promise<any> {
   switch (tool) {
     case "set_goal": return setGoal(args, data);
-    case "define_routine_exercise": return defineRoutine(args, data);
-    case "log_routine_session": return logSession(args, data);
+    case "define_exercise": return defineExercise(args, data);
+    case "update_exercise": return updateExercise(args, data);
+    case "define_routine": return defineRoutineV2(args, data);
+    case "update_routine": return updateRoutineV2(args, data);
+    case "log_workout": return logWorkout(args, data);
+    case "define_schedule": return defineSchedule(args, data);
     case "log_activity": return logActivity(args, data);
     case "define_metric": return defineMetric(args, data);
     case "record_metric": return recordMetric(args, data);
@@ -83,8 +91,6 @@ async function dispatchTool(tool: string, args: Record<string, any>, data: Data)
     case "define_reminder": return defineReminder(args, data);
     case "ack_reminder": return ackReminder(args, data);
     case "define_user_fact": return defineUserFact(args, data);
-    case "define_split_plan": return defineSplitPlan(args, data);
-    case "update_routine_state": return updateRoutineState(args, data);
     case "delete_entity": return deleteEntity(args, data);
     case "get_state": return getState(data);
     case "check_reminders": return checkReminders(data);
@@ -465,6 +471,421 @@ async function logActivity(args: any, data: Data) {
   return { saved: activity };
 }
 
+// ════════════════════════════════════════════════════════════════════
+// 새 운동 모델(v2): 운동(exercise) → 루틴(routine_v2) → 배치(schedule)
+//   운동 = 개별 동작(원자). 측정 축 + 현재 기준값(baseline) 보유.
+//   루틴 = 운동들을 엮은 레시피("수식"). AI 가 사용자 자연어를 blocks 로 구조화.
+//   배치 = 루틴을 요일/순환/골라하기로 둠.
+//   마도서는 여전히 기록·시각화 전용 — 다음 목표를 추천/계산하지 않는다(사용자가 말한 것만 기록).
+// ════════════════════════════════════════════════════════════════════
+
+const slugOk = (s: string) => /^[a-z][a-z0-9_]*$/.test(s);
+
+function parseOptionalNonNegNumber(v: any, field: string): number | null {
+  if (v === undefined || v === null || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`${field} 는 0 이상의 숫자.`);
+  return n;
+}
+
+// 운동(개별 동작) 등록. 처방값(세트·횟수)은 default_* 로 — 루틴이 덮어쓸 수 있는 기본값.
+async function defineExercise(args: any, data: Data) {
+  const slug = String(args.slug ?? "").trim();
+  if (!slugOk(slug)) throw new Error("slug 는 snake_case (소문자/숫자/_).");
+  const display_name = String(args.display_name ?? "").trim();
+  if (!display_name) throw new Error("display_name 필수.");
+  const progression = String(args.progression ?? "weight").trim();
+  if (!PROGRESSIONS.includes(progression as Progression)) {
+    throw new Error(`progression 은 ${PROGRESSIONS.join(" / ")} 중 하나.`);
+  }
+  const unit = String(args.unit ?? "").trim();
+  if (!unit) throw new Error("unit 필수.");
+
+  let category: string | null = null;
+  if (progression === "weight") {
+    category = String(args.category ?? "").trim();
+    if (!["compound", "isolation"].includes(category)) {
+      throw new Error("progression=weight 일 때 category 는 compound 또는 isolation.");
+    }
+  } else if (args.category) {
+    category = String(args.category);
+  }
+
+  const default_sets = parsePositiveInt(args.default_sets, "default_sets") ?? defaultTargetSets(progression);
+  const default_reps = parsePositiveInt(args.default_reps, "default_reps");
+  let default_reps_min = parsePositiveInt(args.default_reps_min, "default_reps_min");
+  let default_reps_max = parsePositiveInt(args.default_reps_max, "default_reps_max");
+  if (default_reps !== null) { default_reps_min = null; default_reps_max = null; }
+  else if (default_reps_min !== null && default_reps_max !== null) {
+    if (default_reps_min > default_reps_max) throw new Error("default_reps_min 은 default_reps_max 이하.");
+  } else if ((default_reps_min !== null) !== (default_reps_max !== null)) {
+    throw new Error("default_reps_min 과 default_reps_max 는 같이 입력 (둘 다 또는 둘 다 생략).");
+  }
+
+  const set_size = parseSetSize(args.set_size);
+
+  let baseline_value: number | null = null;
+  if (args.baseline_value !== undefined && args.baseline_value !== null) {
+    const bv = Number(args.baseline_value);
+    if (!Number.isFinite(bv) || bv < 0) throw new Error("baseline_value 는 0 이상의 숫자.");
+    baseline_value = bv;
+  }
+
+  let memo: string | null = null;
+  if (args.memo !== undefined && args.memo !== null && args.memo !== "") {
+    const m = String(args.memo);
+    if (m.length > 1000) throw new Error("memo 는 1000자 이내.");
+    memo = m;
+  }
+
+  const exercise = {
+    slug, display_name, progression, unit, category,
+    default_sets, default_reps, default_reps_min, default_reps_max, set_size,
+    baseline_value,
+    baseline_source: baseline_value !== null ? "manual" : null,
+    baseline_updated_at: baseline_value !== null ? nowIso() : null,
+    next_session_goal: null,
+    memo,
+    defined_at: nowIso(),
+  };
+  await data.set(`exercise:${slug}`, exercise);
+  return { exercise };
+}
+
+// 운동 상태 갱신 — 기준값/메모/다음목표/기본 처방값/라벨. 구조(progression/unit) 변경은 define_exercise 재호출.
+async function updateExercise(args: any, data: Data) {
+  const slug = String(args.slug ?? "").trim();
+  if (!slug) throw new Error("slug 필수.");
+  const existing = await data.get(`exercise:${slug}`);
+  if (!existing) throw new Error(`등록되지 않은 운동 slug: ${slug}. define_exercise 먼저.`);
+  const patch: Record<string, any> = { ...existing };
+
+  if ("display_name" in args && args.display_name !== null && args.display_name !== undefined) {
+    const dn = String(args.display_name).trim();
+    if (!dn) throw new Error("display_name 은 비어있을 수 없음.");
+    if (dn.length > 200) throw new Error("display_name 은 200자 이내.");
+    patch.display_name = dn;
+  }
+
+  // baseline_value(현재 기준값) — 사용자가 명시할 때만. 위젯 raise_baseline 도 이 값을 갱신.
+  if ("baseline_value" in args) {
+    if (args.baseline_value === null) {
+      patch.baseline_value = null; patch.baseline_source = null; patch.baseline_updated_at = nowIso();
+    } else {
+      const bv = Number(args.baseline_value);
+      if (!Number.isFinite(bv) || bv < 0) throw new Error("baseline_value 는 0 이상의 숫자 또는 null.");
+      patch.baseline_value = bv; patch.baseline_source = "manual"; patch.baseline_updated_at = nowIso();
+    }
+  }
+
+  if ("memo" in args) {
+    if (args.memo === null || args.memo === "") patch.memo = null;
+    else { const m = String(args.memo); if (m.length > 1000) throw new Error("memo 는 1000자 이내."); patch.memo = m; }
+  }
+
+  if ("set_size" in args) patch.set_size = args.set_size === null ? null : parseSetSize(args.set_size);
+  if ("default_sets" in args && args.default_sets !== null && args.default_sets !== undefined) {
+    patch.default_sets = parsePositiveInt(args.default_sets, "default_sets")!;
+  }
+
+  const tr = "default_reps" in args ? args.default_reps : undefined;
+  const trMin = "default_reps_min" in args ? args.default_reps_min : undefined;
+  const trMax = "default_reps_max" in args ? args.default_reps_max : undefined;
+  if (tr !== undefined || trMin !== undefined || trMax !== undefined) {
+    const newReps = tr === undefined
+      ? (typeof existing.default_reps === "number" ? existing.default_reps : null)
+      : (tr === null ? null : parsePositiveInt(tr, "default_reps"));
+    let newMin = trMin === undefined
+      ? (typeof existing.default_reps_min === "number" ? existing.default_reps_min : null)
+      : (trMin === null ? null : parsePositiveInt(trMin, "default_reps_min"));
+    let newMax = trMax === undefined
+      ? (typeof existing.default_reps_max === "number" ? existing.default_reps_max : null)
+      : (trMax === null ? null : parsePositiveInt(trMax, "default_reps_max"));
+    if (newReps !== null) { newMin = null; newMax = null; }
+    else if (newMin !== null && newMax !== null) { if (newMin > newMax) throw new Error("default_reps_min 은 default_reps_max 이하."); }
+    else if ((newMin !== null) !== (newMax !== null)) throw new Error("default_reps_min 과 default_reps_max 는 같이 설정.");
+    patch.default_reps = newReps; patch.default_reps_min = newMin; patch.default_reps_max = newMax;
+  }
+
+  // 다음 목표 — 사용자 수동 지정만 (source=manual). 마도서가 계산/추천하지 않음.
+  if ("next_session_goal" in args) {
+    if (args.next_session_goal === null) patch.next_session_goal = null;
+    else if (typeof args.next_session_goal === "object") {
+      const g = args.next_session_goal;
+      const v = Number(g.value);
+      if (!Number.isFinite(v)) throw new Error("next_session_goal.value 는 숫자.");
+      let gnote: string | null = null;
+      if (g.note !== undefined && g.note !== null && g.note !== "") {
+        const n = String(g.note);
+        if (n.length > 200) throw new Error("next_session_goal.note 는 200자 이내.");
+        gnote = n;
+      }
+      patch.next_session_goal = { value: v, computed_at: nowIso(), source: "manual", note: gnote };
+    } else throw new Error("next_session_goal 은 { value, note? } 또는 null.");
+  }
+
+  patch.updated_at = nowIso();
+  await data.set(`exercise:${slug}`, patch);
+  return { exercise: patch };
+}
+
+// 루틴 블록 정규화 — 알려진 kind 는 그대로, 모르는 kind 도 거부하지 않고 보존(렌더가 폴백).
+function normalizeBlock(b: any, i: number, exerciseSlugs: Set<string>): any {
+  if (!b || typeof b !== "object" || Array.isArray(b)) throw new Error(`blocks[${i}] 는 object 필요.`);
+  let kind = String(b.kind ?? "").trim().toLowerCase();
+  if (!kind) kind = "custom";
+  const block_id = (String(b.block_id ?? "").trim()) || `b${i + 1}`;
+  const label = String(b.label ?? "").trim();
+  if (!label) throw new Error(`blocks[${i}].label (사람이 읽는 설명) 필수.`);
+  if (label.length > 200) throw new Error(`blocks[${i}].label 은 200자 이내.`);
+
+  const rawItems = Array.isArray(b.items) ? b.items : [];
+  const items = rawItems.map((it: any, j: number) => {
+    const exercise_slug = String(it?.exercise_slug ?? "").trim();
+    if (!slugOk(exercise_slug)) throw new Error(`blocks[${i}].items[${j}].exercise_slug 는 snake_case.`);
+    if (!exerciseSlugs.has(exercise_slug)) throw new Error(`blocks[${i}] 의 운동 '${exercise_slug}' 미등록 — define_exercise 먼저.`);
+    const item: any = { exercise_slug };
+    const sets = parsePositiveInt(it.sets, "items.sets"); if (sets !== null) item.sets = sets;
+    const reps = parsePositiveInt(it.reps, "items.reps"); if (reps !== null) item.reps = reps;
+    const rmin = parsePositiveInt(it.reps_min, "items.reps_min"); if (rmin !== null) item.reps_min = rmin;
+    const rmax = parsePositiveInt(it.reps_max, "items.reps_max"); if (rmax !== null) item.reps_max = rmax;
+    const tv = parseOptionalNonNegNumber(it.target_value, "items.target_value"); if (tv !== null) item.target_value = tv;
+    if (it.set_size !== undefined && it.set_size !== null) item.set_size = parseSetSize(it.set_size);
+    return item;
+  });
+
+  const prescription = (b.prescription && typeof b.prescription === "object" && !Array.isArray(b.prescription)) ? b.prescription : {};
+  const params = (b.params && typeof b.params === "object" && !Array.isArray(b.params)) ? b.params : {};
+  let note: string | null = null;
+  if (b.note !== undefined && b.note !== null && b.note !== "") {
+    const n = String(b.note);
+    if (n.length > 500) throw new Error(`blocks[${i}].note 는 500자 이내.`);
+    note = n;
+  }
+  return { block_id, kind, label, items, prescription, params, note };
+}
+
+// 루틴(레시피) 등록 — AI 가 자연어를 blocks 로 구조화. source_text 에 사용자 원문 보관.
+async function defineRoutineV2(args: any, data: Data) {
+  const slug = String(args.slug ?? "").trim();
+  if (!slugOk(slug)) throw new Error("slug 는 snake_case.");
+  const display_name = String(args.display_name ?? "").trim();
+  if (!display_name) throw new Error("display_name 필수.");
+  let source_text: string | null = null;
+  if (args.source_text !== undefined && args.source_text !== null && args.source_text !== "") {
+    const st = String(args.source_text);
+    if (st.length > 2000) throw new Error("source_text 는 2000자 이내.");
+    source_text = st;
+  }
+  const rawBlocks = Array.isArray(args.blocks) ? args.blocks : null;
+  if (!rawBlocks || rawBlocks.length === 0) throw new Error("blocks 1개 이상 필요.");
+
+  const exerciseSlugs = new Set((await data.list("exercise:")).map((r: any) => r.value?.slug).filter(Boolean));
+  let memo: string | null = null;
+  if (args.memo !== undefined && args.memo !== null && args.memo !== "") {
+    const m = String(args.memo);
+    if (m.length > 1000) throw new Error("memo 는 1000자 이내.");
+    memo = m;
+  }
+  const blocks = rawBlocks.map((b: any, i: number) => normalizeBlock(b, i, exerciseSlugs));
+  const routine = { slug, display_name, source_text, blocks, memo, defined_at: nowIso() };
+  await data.set(`routine_v2:${slug}`, routine);
+  return { routine };
+}
+
+// 루틴 다듬기 — 라벨/원문/블록/메모 재지정.
+async function updateRoutineV2(args: any, data: Data) {
+  const slug = String(args.slug ?? "").trim();
+  if (!slug) throw new Error("slug 필수.");
+  const existing = await data.get(`routine_v2:${slug}`);
+  if (!existing) throw new Error(`등록되지 않은 루틴 slug: ${slug}. define_routine 먼저.`);
+  const patch: Record<string, any> = { ...existing };
+
+  if ("display_name" in args && args.display_name !== null && args.display_name !== undefined) {
+    const dn = String(args.display_name).trim();
+    if (!dn) throw new Error("display_name 은 비어있을 수 없음.");
+    if (dn.length > 200) throw new Error("display_name 은 200자 이내.");
+    patch.display_name = dn;
+  }
+  if ("source_text" in args) {
+    if (args.source_text === null || args.source_text === "") patch.source_text = null;
+    else { const st = String(args.source_text); if (st.length > 2000) throw new Error("source_text 는 2000자 이내."); patch.source_text = st; }
+  }
+  if ("memo" in args) {
+    if (args.memo === null || args.memo === "") patch.memo = null;
+    else { const m = String(args.memo); if (m.length > 1000) throw new Error("memo 는 1000자 이내."); patch.memo = m; }
+  }
+  if ("blocks" in args) {
+    const rawBlocks = Array.isArray(args.blocks) ? args.blocks : null;
+    if (!rawBlocks || rawBlocks.length === 0) throw new Error("blocks 1개 이상 필요.");
+    const exerciseSlugs = new Set((await data.list("exercise:")).map((r: any) => r.value?.slug).filter(Boolean));
+    patch.blocks = rawBlocks.map((b: any, i: number) => normalizeBlock(b, i, exerciseSlugs));
+  }
+  patch.updated_at = nowIso();
+  await data.set(`routine_v2:${slug}`, patch);
+  return { routine: patch };
+}
+
+// 운동 실행 기록 — 블록·운동·세트별 실제값. 슈퍼셋/서킷도 구조 그대로(꼬리표 불필요).
+async function logWorkout(args: any, data: Data) {
+  const routine_slug = (String(args.routine_slug ?? "").trim()) || "_adhoc";
+  if (routine_slug !== "_adhoc" && !await data.get(`routine_v2:${routine_slug}`)) {
+    throw new Error(`등록되지 않은 루틴 slug: ${routine_slug}. define_routine 먼저 (또는 routine_slug 생략/'_adhoc').`);
+  }
+  const rawBlocks = Array.isArray(args.blocks) ? args.blocks : [];
+  if (rawBlocks.length === 0) throw new Error("blocks 1개 이상 필요.");
+
+  const exMap = new Map<string, any>();
+  for (const row of await data.list("exercise:")) { if (row.value?.slug) exMap.set(row.value.slug, row.value); }
+
+  const blocks = rawBlocks.map((b: any, i: number) => {
+    const block_id = (String(b.block_id ?? "").trim()) || `b${i + 1}`;
+    const kind = (String(b.kind ?? "").trim().toLowerCase()) || "custom";
+    const rawEntries = Array.isArray(b.entries) ? b.entries : [];
+    const entries = rawEntries.map((e: any, j: number) => {
+      const exercise_slug = String(e?.exercise_slug ?? "").trim();
+      if (!slugOk(exercise_slug)) throw new Error(`blocks[${i}].entries[${j}].exercise_slug 는 snake_case.`);
+      const ex = exMap.get(exercise_slug);
+      if (!ex) throw new Error(`운동 '${exercise_slug}' 미등록 — define_exercise 먼저.`);
+      const prog = ex.progression || "weight";
+      const sets = Array.isArray(e.sets) ? e.sets.map((s: any) => normalizeSet(s, prog)) : [];
+      return { exercise_slug, sets };
+    });
+    const block: any = { block_id, kind, entries };
+    const rc = Number(b.rounds_completed);
+    if (Number.isFinite(rc) && rc >= 0) block.rounds_completed = rc;
+    if (b.params_actual && typeof b.params_actual === "object" && !Array.isArray(b.params_actual)) block.params_actual = b.params_actual;
+    return block;
+  });
+
+  const performed_at = String(args.performed_at ?? nowIso());
+  const is_deload = args.is_deload === true;
+  const note = args.note ? String(args.note) : undefined;
+  const workout: any = { routine_slug, blocks, performed_at, is_deload, source: "ai" };
+  if (note) workout.note = note;
+  await data.set(`workout:${routine_slug}:${performed_at}:${shortRand()}`, workout);
+  // 마도서는 기록만 — 다음 목표를 계산/추천하지 않음.
+  return { saved: workout };
+}
+
+// 배치(요일/순환/골라하기) — 묶음이 루틴(routine_v2)을 가리킴.
+async function defineSchedule(args: any, data: Data) {
+  const slug = String(args.slug ?? "").trim();
+  if (!slugOk(slug)) throw new Error("slug 는 snake_case.");
+  const name = String(args.name ?? "").trim();
+  if (!name) throw new Error("name 필수.");
+
+  const routineSlugs = new Set((await data.list("routine_v2:")).map((r: any) => r.value?.slug).filter(Boolean));
+  const rawBuckets = Array.isArray(args.buckets) ? args.buckets : null;
+  if (!rawBuckets || rawBuckets.length === 0) throw new Error("buckets 1개 이상 필요.");
+  const buckets = rawBuckets.map((b: any, i: number) => {
+    const key = String(b?.key ?? "").trim();
+    if (!key) throw new Error(`buckets[${i}].key 필수.`);
+    const label = String(b?.label ?? "").trim();
+    if (!label) throw new Error(`buckets[${i}].label 필수.`);
+    const routine_v2_slugs = Array.isArray(b?.routine_v2_slugs) ? b.routine_v2_slugs.map((x: any) => String(x)) : [];
+    for (const rs of routine_v2_slugs) {
+      if (!routineSlugs.has(rs)) throw new Error(`buckets[${i}] 의 루틴 '${rs}' 미등록 — define_routine 먼저.`);
+    }
+    return { key, label, routine_v2_slugs };
+  });
+  const keys = new Set(buckets.map((b: any) => b.key));
+  if (keys.size !== buckets.length) throw new Error("buckets.key 중복.");
+
+  const rawAssign = args.assignment;
+  if (!rawAssign || typeof rawAssign !== "object") throw new Error("assignment object 필수.");
+  const kind = String(rawAssign.kind ?? "").trim();
+  if (!SPLIT_KINDS.includes(kind as any)) throw new Error(`assignment.kind 는 ${SPLIT_KINDS.join(" / ")} 중 하나.`);
+  const assignment: any = { kind };
+  if (kind === "weekly") {
+    const map = rawAssign.map;
+    if (!map || typeof map !== "object") throw new Error("assignment.kind=weekly 일 때 map object 필수.");
+    const norm: Record<string, string | null> = {};
+    for (const w of WEEKDAYS) {
+      const v = (map as any)[w];
+      if (v === null || v === undefined || v === "") norm[w] = null;
+      else { const sv = String(v); if (!keys.has(sv)) throw new Error(`assignment.map.${w}="${sv}" 가 buckets.key 에 없음.`); norm[w] = sv; }
+    }
+    assignment.map = norm;
+  } else if (kind === "sequence") {
+    const order = Array.isArray(rawAssign.order) ? rawAssign.order.map((x: any) => String(x)) : [];
+    if (order.length === 0) throw new Error("assignment.kind=sequence 일 때 order 1개 이상.");
+    for (const k of order) if (!keys.has(k)) throw new Error(`assignment.order 의 "${k}" 가 buckets.key 에 없음.`);
+    assignment.order = order;
+  }
+
+  const is_active = !!args.is_active;
+  if (is_active) {
+    const existing = (await data.list("schedule:")).map((r: any) => r.value).filter(nonNull);
+    for (const p of existing) {
+      if (p.slug !== slug && p.is_active) await data.set(`schedule:${p.slug}`, { ...p, is_active: false });
+    }
+  }
+  const schedule = { slug, name, buckets, assignment, is_active, defined_at: nowIso() };
+  await data.set(`schedule:${slug}`, schedule);
+  return { schedule };
+}
+
+// 활성 배치의 오늘 차례 계산 (요일/순환). 순환은 workout 기록으로 다음 차례 추정.
+async function nextSequenceBucketV2(plan: any, data: Data) {
+  const order: string[] = plan.assignment?.order ?? [];
+  if (order.length === 0) return null;
+  const bucketOf = (k: string) => plan.buckets.find((b: any) => b.key === k);
+  const first = bucketOf(order[0]);
+  const firstHint = first ? { key: order[0], label: first.label, routine_v2_slugs: first.routine_v2_slugs, reason: "기록 없음 — 첫 차례." } : null;
+
+  const allWorkouts = (await data.list("workout:")).map((r: any) => r.value).filter(nonNull)
+    .sort((a: any, b: any) => String(b.performed_at).localeCompare(String(a.performed_at)));
+  for (const w of allWorkouts) {
+    const bucket = plan.buckets.find((b: any) => Array.isArray(b.routine_v2_slugs) && b.routine_v2_slugs.includes(w.routine_slug));
+    if (bucket) {
+      const idx = order.indexOf(bucket.key);
+      const nextKey = order[(idx + 1) % order.length];
+      const next = bucketOf(nextKey);
+      return next ? { key: nextKey, label: next.label, routine_v2_slugs: next.routine_v2_slugs, last_bucket_key: bucket.key, last_session_at: w.performed_at } : null;
+    }
+  }
+  return firstHint;
+}
+
+async function enrichActiveScheduleV2(plan: any, settings: any, data: Data) {
+  const kind = plan.assignment?.kind;
+  if (kind === "weekly") {
+    const wkey = weekdayKey(settings.timezone);
+    const bk = plan.assignment.map?.[wkey] ?? null;
+    const bucket = bk ? plan.buckets.find((b: any) => b.key === bk) : null;
+    return {
+      ...plan,
+      today_bucket: bucket
+        ? { weekday: wkey, key: bucket.key, label: bucket.label, routine_v2_slugs: bucket.routine_v2_slugs }
+        : { weekday: wkey, key: null, label: "휴식일", routine_v2_slugs: [] },
+      next_bucket_hint: null,
+    };
+  }
+  if (kind === "sequence") {
+    return { ...plan, today_bucket: null, next_bucket_hint: await nextSequenceBucketV2(plan, data) };
+  }
+  return { ...plan, today_bucket: null, next_bucket_hint: null };
+}
+
+// workout 기록들에서 특정 운동의 세트만 모아 의사-세션 목록으로 — computeProgressionState 입력용.
+function collectExerciseSessions(workouts: any[], exerciseSlug: string): any[] {
+  const sessions: any[] = [];
+  for (const w of workouts) {
+    if (!Array.isArray(w.blocks)) continue;
+    const sets: any[] = [];
+    for (const b of w.blocks) {
+      if (!Array.isArray(b.entries)) continue;
+      for (const e of b.entries) {
+        if (e?.exercise_slug === exerciseSlug && Array.isArray(e.sets)) for (const st of e.sets) sets.push(st);
+      }
+    }
+    if (sets.length > 0) sessions.push({ id: w.id, performed_at: w.performed_at, is_deload: w.is_deload === true, sets, routine_slug: w.routine_slug });
+  }
+  sessions.sort((a, b) => String(a.performed_at).localeCompare(String(b.performed_at)));
+  return sessions;
+}
+
 async function defineMetric(args: any, data: Data) {
   const slug = String(args.slug ?? "").trim();
   if (!/^[a-z][a-z0-9_]*$/.test(slug)) throw new Error("slug 는 snake_case.");
@@ -758,6 +1179,9 @@ async function deleteEntity(args: any, data: Data) {
   switch (kind) {
     // ── 정의(definition) — id 는 slug ───────────────
     case "routine": key = `routine:${id}`; break;
+    case "exercise": key = `exercise:${id}`; break;
+    case "routine_v2": key = `routine_v2:${id}`; break;
+    case "schedule": key = `schedule:${id}`; break;
     case "metric": key = `metric:${id}`; break;
     case "reminder": key = `reminder:${id}`; break;
     case "split_plan": key = `split_plan:${id}`; break;
@@ -791,8 +1215,12 @@ async function deleteEntity(args: any, data: Data) {
       key = id;
       break;
     }
+    case "workout":
+      if (!id.startsWith("workout:")) throw new Error("workout id 는 'workout:' 로 시작하는 전체 key.");
+      key = id;
+      break;
 
-    default: throw new Error("kind 는 routine / metric / reminder / fact / split_plan / meal_preset / meal / measure / session / activity 중 하나.");
+    default: throw new Error("kind 는 exercise / routine_v2 / schedule / metric / reminder / fact / meal_preset / meal / measure / workout / activity 중 하나.");
   }
   return { deleted: await data.delete(key), kind, id, axis: args.axis ?? null, side_effect: sideEffect };
 }
@@ -804,7 +1232,7 @@ async function getState(data: Data) {
   const nowMin = hhmmToMin(hhmmInTz(settings.timezone));
   const sevenDaysAgo = Date.now() - 7 * 86400 * 1000;
 
-  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, splitPlansRaw, mealPresetsRaw] = await Promise.all([
+  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, splitPlansRaw, mealPresetsRaw, exerciseDefsRaw, routineV2Raw, scheduleRaw, workoutsRaw] = await Promise.all([
     data.list("metric:"),
     data.list("routine:"),
     data.list("activity:"),
@@ -813,6 +1241,10 @@ async function getState(data: Data) {
     data.list("fact:"),
     data.list("split_plan:"),
     data.list("meal_preset:"),
+    data.list("exercise:"),
+    data.list("routine_v2:"),
+    data.list("schedule:"),
+    data.list("workout:"),
   ]);
   const metricDefs = metricDefsRaw.map(r => r.value).filter(nonNull);
   const routineDefs = routineDefsRaw.map(r => r.value).filter(nonNull);
@@ -820,6 +1252,10 @@ async function getState(data: Data) {
   const facts = factsRaw.map(r => r.value).filter(nonNull);
   const splitPlans = splitPlansRaw.map(r => r.value).filter(nonNull);
   const meal_presets = mealPresetsRaw.map(r => r.value).filter(nonNull);
+  const exerciseDefs = exerciseDefsRaw.map(r => r.value).filter(nonNull);
+  const routineV2Defs = routineV2Raw.map(r => r.value).filter(nonNull);
+  const scheduleDefs = scheduleRaw.map(r => r.value).filter(nonNull);
+  const allWorkouts = workoutsRaw.map((r: any) => ({ id: r.key, ...r.value })).filter((w: any) => w && Array.isArray(w.blocks));
 
   const user_facts = {
     exercise: facts.filter((f: any) => f.axis === "exercise"),
@@ -903,7 +1339,26 @@ async function getState(data: Data) {
     ? await enrichActivePlan(activePlan, settings, data)
     : null;
 
-  const anyRegistered = metricDefs.length > 0 || routineDefs.length > 0 || reminderDefs.length > 0 || facts.length > 0 || splitPlans.length > 0;
+  // ── 새 운동 모델(v2): 운동(원자)·루틴(레시피)·배치 ──
+  const exercises = exerciseDefs.map((def: any) => {
+    const sessions = collectExerciseSessions(allWorkouts, def.slug);
+    const last = sessions.at(-1) ?? null;
+    const progression_state = computeProgressionState(def, sessions);
+    const prog = def.progression || "weight";
+    const points = sessions
+      .filter((se: any) => se.is_deload !== true)
+      .map((se: any) => {
+        const work = se.sets.filter((x: any) => x.is_warmup !== true);
+        return work.length > 0 ? mean(work.map((x: any) => setValue(x, prog))) : null;
+      })
+      .filter((v: any) => typeof v === "number" && Number.isFinite(v));
+    return { ...def, session_count: sessions.length, last_session: last, progression_state, recent_points: points.slice(-8) };
+  });
+  const activeSchedule = scheduleDefs.find((p: any) => p.is_active) ?? null;
+  const active_schedule = activeSchedule ? await enrichActiveScheduleV2(activeSchedule, settings, data) : null;
+
+  const anyRegistered = metricDefs.length > 0 || reminderDefs.length > 0 || facts.length > 0
+    || exerciseDefs.length > 0 || routineV2Defs.length > 0 || scheduleDefs.length > 0;
   let protocol_step: string;
   let recommended_next_action: string;
   if (!goal) {
@@ -934,6 +1389,11 @@ async function getState(data: Data) {
     split_plans: splitPlans,
     active_split_plan,
     meal_presets,
+    // 새 운동 모델(v2)
+    exercises,
+    routines_v2: routineV2Defs,
+    schedules: scheduleDefs,
+    active_schedule,
   };
 }
 
@@ -1001,7 +1461,8 @@ async function nextSequenceBucket(plan: any, data: Data) {
 function computeProgressionState(routine: any, sessions: any[]) {
   const progression = routine.progression || "weight";
   const direction: "increase" | "decrease" = progression === "time" ? "decrease" : "increase";
-  const wv = typeof routine.working_value === "number" ? routine.working_value : null;
+  const wv = typeof routine.baseline_value === "number" ? routine.baseline_value
+    : (typeof routine.working_value === "number" ? routine.working_value : null);
 
   // 디로드 세션은 progression 추론에서 통째 제외 (워밍업 세트도 제외)
   const progSessions = sessions.filter((s: any) => s.is_deload !== true);
@@ -1137,58 +1598,84 @@ function actionToSetInput(action: any, prog: string): any {
   if (prog === "hold") return { hold: v };
   return {};
 }
+// 위젯 행동 처리 (v2) — 블록 구조로 workout:<routine>:<date>:widget 에 저장. 기준값 올리기 포함.
 async function applyWidgetAction(action: any, data: Data, date: string) {
-  const slug = String(action.slug ?? "").trim();
-  if (!/^[a-z][a-z0-9_]*$/.test(slug)) return;
-  const routine = await data.get(`routine:${slug}`);
-  if (!routine) return;
-  const prog = routine.progression || "weight";
   const kind = String(action.kind ?? "");
 
-  // 기본값도 바꿀까요? → 사용자가 '예' 했을 때만
-  if (kind === "set_default") {
-    const patch: any = {};
-    const w = Number(action.w);
-    if (Number.isFinite(w) && w >= 0) patch.working_value = w;
-    if (prog === "weight") {
-      const r = Number(action.r);
-      if (Number.isInteger(r) && r > 0) patch.target_reps = r;
-    }
-    if (Object.keys(patch).length > 0) await data.set(`routine:${slug}`, { ...routine, ...patch });
+  // 기준값 올리기 — 사용자가 '예' 했을 때만. 마도서가 제안하는 게 아니라 실제로 한 값을 반영한다.
+  if (kind === "raise_baseline") {
+    const slug = String(action.exercise ?? "").trim();
+    if (!slugOk(slug)) return;
+    const ex = await data.get(`exercise:${slug}`);
+    if (!ex) return;
+    const v = Number(action.value);
+    if (!Number.isFinite(v) || v < 0) return;
+    await data.set(`exercise:${slug}`, { ...ex, baseline_value: v, baseline_source: "logged", baseline_updated_at: nowIso() });
     return;
   }
 
-  const key = `session:${slug}:${date}:widget`;
-  let sess: any = await data.get(key);
-  if (!sess || !Array.isArray(sess.sets)) sess = { slug, sets: [], performed_at: `${date}T12:00:00.000Z`, source: "widget" };
+  // 세트 기록/취소
+  const routineSlug = (String(action.routine ?? "").trim()) || "_adhoc";
+  const block_id = String(action.block_id ?? "").trim();
+  const exSlug = String(action.exercise ?? "").trim();
+  if (!block_id || !slugOk(exSlug)) return;
+  const ex = await data.get(`exercise:${exSlug}`);
+  if (!ex) return;
+  const prog = ex.progression || "weight";
 
-  if (kind === "log_set") {
+  const key = `workout:${routineSlug}:${date}:widget`;
+  let w: any = await data.get(key);
+  if (!w || !Array.isArray(w.blocks)) w = { routine_slug: routineSlug, blocks: [], performed_at: `${date}T12:00:00.000Z`, source: "widget" };
+
+  if (kind === "log_block_set") {
     const i = parseIndex(action.i);
     if (i === null) return;
-    const set: any = normalizeSet(actionToSetInput(action, prog), prog); // 빈/잘못된 값이면 throw → 상위 try/catch 가 무시(저장 안 함)
+    let set: any;
+    try { set = normalizeSet(actionToSetInput(action, prog), prog); } catch { return; } // 빈/잘못된 값이면 저장 안 함
     set.idx = i;
-    sess.sets = sess.sets.filter((x: any) => x.idx !== i);
-    sess.sets.push(set);
-    sess.sets.sort((a: any, b: any) => (a.idx ?? 0) - (b.idx ?? 0));
-    await data.set(key, sess);
-  } else if (kind === "clear_set") {
+    let b = w.blocks.find((x: any) => x.block_id === block_id);
+    if (!b) { b = { block_id, kind: String(action.bkind ?? "") || "straight", entries: [] }; w.blocks.push(b); }
+    let e = b.entries.find((x: any) => x.exercise_slug === exSlug);
+    if (!e) { e = { exercise_slug: exSlug, sets: [] }; b.entries.push(e); }
+    e.sets = e.sets.filter((x: any) => x.idx !== i);
+    e.sets.push(set);
+    e.sets.sort((a: any, b2: any) => (a.idx ?? 0) - (b2.idx ?? 0));
+    await data.set(key, w);
+  } else if (kind === "clear_block_set") {
     const i = parseIndex(action.i);
     if (i === null) return;
-    sess.sets = sess.sets.filter((x: any) => x.idx !== i);
-    if (sess.sets.length === 0) await data.delete(key);
-    else await data.set(key, sess);
-  } else if (kind === "log_all") {
-    const di = defaultSetInput(routine, prog);
-    const vals = prog === "weight" ? [di.weight, di.reps] : [Object.values(di)[0]];
-    if (vals.some((x) => typeof x !== "number")) return; // 기본값 미설정이면 전체확인 불가
-    const ts = typeof routine.target_sets === "number" ? routine.target_sets : defaultTargetSets(prog);
-    const sets: any[] = [];
-    for (let i = 0; i < ts; i++) { const set: any = normalizeSet(di, prog); set.idx = i; sets.push(set); }
-    sess.sets = sets;
-    await data.set(key, sess);
-  } else if (kind === "clear_all") {
-    await data.delete(key);
+    const b = w.blocks.find((x: any) => x.block_id === block_id);
+    if (!b) return;
+    const e = b.entries.find((x: any) => x.exercise_slug === exSlug);
+    if (e) e.sets = e.sets.filter((x: any) => x.idx !== i);
+    b.entries = b.entries.filter((x: any) => Array.isArray(x.sets) && x.sets.length > 0);
+    w.blocks = w.blocks.filter((x: any) => Array.isArray(x.entries) && x.entries.length > 0);
+    if (w.blocks.length === 0) await data.delete(key);
+    else await data.set(key, w);
   }
+}
+
+// 그 날짜의 위젯 기록 — routine_slug → 위젯 workout (오늘 편집용).
+async function loadWidgetWorkouts(data: Data, date: string): Promise<Record<string, any>> {
+  const out: Record<string, any> = {};
+  for (const row of await data.list("workout:")) {
+    if (row.key.endsWith(`:${date}:widget`)) {
+      const w: any = row.value;
+      if (w && Array.isArray(w.blocks)) out[w.routine_slug] = w;
+    }
+  }
+  return out;
+}
+// 그 날짜에 실제로 한 모든 workout (위젯+AI) — 지난 날 읽기 전용 표시용.
+async function loadDayWorkouts(data: Data, date: string, tz: string): Promise<any[]> {
+  const out: any[] = [];
+  for (const row of await data.list("workout:")) {
+    const w: any = row.value;
+    if (w && Array.isArray(w.blocks) && w.performed_at && dateInTz(tz, new Date(w.performed_at)) === date) {
+      out.push({ id: row.key, ...w });
+    }
+  }
+  return out;
 }
 async function loadWidgetSessions(data: Data, date: string, routines: any[]): Promise<Record<string, any>> {
   const out: Record<string, any> = {};
@@ -1235,8 +1722,8 @@ async function renderDashboard(args: any, data: Data) {
   s.today = today;
   s.is_today = viewDate === today;
   s.view_weekday = weekdayKey(settings.timezone, new Date(viewDate + "T12:00:00.000Z"));
-  s.view_sessions = await loadWidgetSessions(data, viewDate, s.routines);
-  s.day_records = await loadDayRecords(data, viewDate, s.routines, settings.timezone);
+  s.view_workouts = await loadWidgetWorkouts(data, viewDate);
+  s.day_workouts = await loadDayWorkouts(data, viewDate, settings.timezone);
   return { html: buildDashboardHtml(String(args.tab ?? "overview"), s) };
 }
 
@@ -1268,9 +1755,9 @@ function buildDashboardHtml(tab: string, s: any): string {
   if (tab === "overview") {
     content += renderOverviewCard(s);
   } else if (tab === "exercise") {
-    content += renderTodayWorkoutCard(s);
-    content += renderSplitPlanCard(s.active_split_plan, s.routines);
-    content += renderMyRecordsCard(s.routines, s.recent_activities);
+    content += renderTodayRoutineCard(s);
+    content += renderScheduleCard(s.active_schedule, s.routines_v2);
+    content += renderExercisesCard(s.exercises, s.routines_v2, s.recent_activities);
     content += renderFactsCard("운동 환경/장비/제약", s.user_facts.exercise);
   } else if (tab === "metrics") {
     content += renderMetricsCard(s.metrics);
@@ -1390,6 +1877,21 @@ details[open] .chev{transform:rotate(90deg)}
 .cal-d.sel-d{background:#7c3aed;color:#fff}
 .cal-d.today-d{outline:1px solid #c4b5fd;color:#6d28d9;font-weight:700}
 .cal-today{margin-top:8px;width:100%;padding:6px;border:1px dashed #c4b5fd;border-radius:6px;background:#f5f3ff;color:#6d28d9;font-size:12px;font-family:inherit;cursor:pointer}
+.rt-name{font-size:13px;font-weight:700;color:#374151;margin:11px 0 1px}
+.rt-src{font-size:11px;color:#6b7280;margin:0 0 6px;font-style:italic;line-height:1.45}
+.blk{padding:7px 0;border-bottom:1px solid #eef0f3}
+.blk:last-child{border-bottom:none}
+.blk-hdr{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px}
+.blk-label{font-size:12px;color:#374151;font-weight:600}
+.kind-badge{background:#ede9fe;color:#6d28d9}
+.block-group{border-left:2px solid #c4b5fd;background:#faf9ff;border-radius:0 6px 6px 0;padding:6px 0 6px 9px;margin:4px 0}
+.round{padding:2px 0}
+.round+.round{border-top:1px dashed #ece9f6;margin-top:2px;padding-top:4px}
+.round-n{font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;margin:1px 0 2px}
+.row-ex{font-size:11px;color:#6b7280;min-width:52px;flex-shrink:0;word-break:break-word;overflow-wrap:anywhere}
+.blk-pill{font-size:12px;color:#4c1d95;background:#f5f3ff;border-radius:4px;padding:3px 8px;display:inline-block;margin:1px 0 5px}
+.blk-note{font-size:11px;color:#6b7280;margin:2px 0 4px;line-height:1.5}
+.spark{width:78px;height:16px;vertical-align:middle;margin-left:4px}
 </style></head><body>
 <div class="hdr">
 <div class="step">${escapeHtml(stepLabels[s.protocol_step] || s.protocol_step)} · ${escapeHtml(s.server_now_local)} (${escapeHtml(s.settings.timezone)})</div>
@@ -1420,6 +1922,14 @@ function clearSet(slug, i){ _post({ kind: 'clear_set', slug: slug, i: i }); }
 function logAll(slug){ _post({ kind: 'log_all', slug: slug }); }
 function clearAll(slug){ _post({ kind: 'clear_all', slug: slug }); }
 function setDefault(slug, w, r){ _post({ kind: 'set_default', slug: slug, w: w, r: r }); }
+function _rowVal(row, n){ var el = row.querySelector('[name=' + n + ']'); return el ? el.value : undefined; }
+function logBlockSet(routine, block, ex, i){
+  var row = document.querySelector('[data-row="' + routine + '~' + block + '~' + ex + '~' + i + '"]');
+  if (!row) return;
+  _post({ kind: 'log_block_set', routine: routine, block_id: block, exercise: ex, i: i, w: _rowVal(row,'w'), r: _rowVal(row,'r'), v: _rowVal(row,'v') });
+}
+function clearBlockSet(routine, block, ex, i){ _post({ kind: 'clear_block_set', routine: routine, block_id: block, exercise: ex, i: i }); }
+function raiseBaseline(ex, val){ _post({ kind: 'raise_baseline', exercise: ex, value: val }); }
 function goDate(d){ parent.postMessage({ type: 'widget-state-change', state: { tab: TAB, date: d } }, '*'); }
 function toggleCal(){ var p = document.getElementById('calPop'); if (p) p.classList.toggle('open'); }
 document.querySelectorAll('.tab').forEach(function(b){ b.addEventListener('click', function(){ switchTab(b.dataset.tab); }); });
@@ -1432,15 +1942,16 @@ function renderOverviewCard(s: any): string {
   const factCount = s.user_facts.exercise.length + s.user_facts.health_metric.length + s.user_facts.diet_reminder.length + s.user_facts.baseline.length;
 
   html += `<div class="card"><h3>요약</h3>`;
-  html += `<div class="row"><div class="name">운동 루틴</div><div class="val">${s.routines.length}</div></div>`;
+  html += `<div class="row"><div class="name">운동</div><div class="val">${(s.exercises?.length ?? 0)}</div></div>`;
+  html += `<div class="row"><div class="name">루틴</div><div class="val">${(s.routines_v2?.length ?? 0)}</div></div>`;
   html += `<div class="row"><div class="name">건강 지표</div><div class="val">${s.metrics.length}</div></div>`;
   html += `<div class="row"><div class="name">알람</div><div class="val">${s.reminders.length}</div></div>`;
   html += `<div class="row"><div class="name">사용자 사실 (4축 합계)</div><div class="val">${factCount}</div></div>`;
-  html += `<div class="row"><div class="name">활성 분할</div><div class="val">${s.active_split_plan ? escapeHtml(s.active_split_plan.name) : '<span class="meta">없음</span>'}</div></div>`;
+  html += `<div class="row"><div class="name">활성 배치</div><div class="val">${s.active_schedule ? escapeHtml(s.active_schedule.name) : '<span class="meta">없음</span>'}</div></div>`;
   html += `</div>`;
 
-  if (s.active_split_plan) {
-    html += renderTodayBucketCard(s.active_split_plan, s.routines);
+  if (s.active_schedule) {
+    html += renderTodayBucketCardV2(s.active_schedule, s.routines_v2);
   }
 
   // 오늘 차례 묶음의 루틴들에 stash 된 다음 목표 — overview 에서 하이라이트
@@ -1512,31 +2023,57 @@ function renderOverviewCard(s: any): string {
   return html;
 }
 
-function collectTodayGoals(s: any): Array<{ display_name: string; unit: string | null; goal: any }> {
-  // 활성 분할의 오늘/다음 묶음 routine_slugs 우선, 없으면 전체 routine 의 stash 된 goal
-  const plan = s.active_split_plan;
-  let slugs: string[] | null = null;
-  if (plan?.today_bucket?.routine_slugs?.length > 0) {
-    slugs = plan.today_bucket.routine_slugs;
-  } else if (plan?.next_bucket_hint?.routine_slugs?.length > 0) {
-    slugs = plan.next_bucket_hint.routine_slugs;
+// 오늘 차례 카드 (v2) — 활성 배치의 오늘/다음 묶음 + 그 묶음의 루틴 이름.
+function renderTodayBucketCardV2(plan: any, routines: any[] = []): string {
+  const kind = plan.assignment?.kind;
+  const nameOf = (slug: string) => { const r = (routines || []).find((x: any) => x?.slug === slug); return r ? r.display_name : slug; };
+  const listRoutines = (slugs: any[]) => (slugs || []).map((s: any) => escapeHtml(nameOf(String(s)))).join(", ") || "없음";
+  let html = `<div class="card"><h3>오늘 차례 — ${escapeHtml(plan.name)}</h3>`;
+  if (kind === "weekly") {
+    const tb = plan.today_bucket;
+    if (tb?.key) {
+      html += `<div class="row"><div class="name">오늘 묶음</div><div class="val">${escapeHtml(tb.label)}</div></div>`;
+      html += `<div class="row"><div class="name"><span class="meta">루틴</span></div><div class="val"><span class="meta">${listRoutines(tb.routine_v2_slugs)}</span></div></div>`;
+    } else {
+      html += `<div class="row"><div class="name">오늘</div><div class="val"><span class="meta">휴식일</span></div></div>`;
+    }
+  } else if (kind === "sequence") {
+    const h = plan.next_bucket_hint;
+    if (h) {
+      html += `<div class="row"><div class="name">다음 차례</div><div class="val">${escapeHtml(h.label)}</div></div>`;
+      html += `<div class="row"><div class="name"><span class="meta">루틴</span></div><div class="val"><span class="meta">${listRoutines(h.routine_v2_slugs)}</span></div></div>`;
+    }
+  } else if (kind === "freestyle") {
+    html += `<div class="row"><div class="name">자유 선택</div><div class="val">${plan.buckets.length}개 묶음 중 선택</div></div>`;
   }
+  html += "</div>";
+  return html;
+}
+// 오늘 운동에 해당하는 운동들의 '사용자가 정한 다음 목표' 모음 (overview 하이라이트용).
+function collectTodayGoals(s: any): Array<{ display_name: string; unit: string | null; goal: any }> {
+  const plan = s.active_schedule;
+  let routineSlugs: string[] | null = null;
+  if (plan?.today_bucket?.routine_v2_slugs?.length > 0) routineSlugs = plan.today_bucket.routine_v2_slugs;
+  else if (plan?.next_bucket_hint?.routine_v2_slugs?.length > 0) routineSlugs = plan.next_bucket_hint.routine_v2_slugs;
+
+  const exMap = new Map<string, any>();
+  for (const ex of (s.exercises || [])) exMap.set(ex.slug, ex);
   const list: Array<{ display_name: string; unit: string | null; goal: any }> = [];
-  if (slugs) {
-    for (const slug of slugs) {
-      const r = s.routines.find((x: any) => x?.slug === slug);
-      if (r?.next_session_goal && typeof r.next_session_goal.value === "number") {
-        list.push({ display_name: r.display_name, unit: r.unit ?? null, goal: r.next_session_goal });
+  const pushEx = (ex: any) => {
+    if (ex?.next_session_goal && typeof ex.next_session_goal.value === "number") {
+      list.push({ display_name: ex.display_name, unit: ex.unit ?? null, goal: ex.next_session_goal });
+    }
+  };
+  if (routineSlugs) {
+    const seen = new Set<string>();
+    for (const rs of routineSlugs) {
+      const r = (s.routines_v2 || []).find((x: any) => x.slug === rs);
+      for (const b of (r?.blocks || [])) for (const it of (b.items || [])) {
+        if (!seen.has(it.exercise_slug)) { seen.add(it.exercise_slug); pushEx(exMap.get(it.exercise_slug)); }
       }
     }
   } else {
-    // 분할 없으면 — stash 된 모든 루틴 (최대 5개)
-    for (const r of s.routines) {
-      if (r?.next_session_goal && typeof r.next_session_goal.value === "number") {
-        list.push({ display_name: r.display_name, unit: r.unit ?? null, goal: r.next_session_goal });
-        if (list.length >= 5) break;
-      }
-    }
+    for (const ex of (s.exercises || [])) { pushEx(ex); if (list.length >= 5) break; }
   }
   return list;
 }
@@ -1916,6 +2453,289 @@ function renderMyRecordsCard(routines: any[], activities: any[]): string {
     }
   }
   return `<div class="card"><details><summary class="card-sum"><span class="chev"></span>나의 기록 (${routines.length})</summary><div class="card-body">${body}</div></details></div>`;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// 새 운동 모델(v2) 위젯 렌더 — 운동 → 루틴(블록) → 배치
+// ════════════════════════════════════════════════════════════════════
+function exUnit(ex: any): string { return ex?.unit ? escapeHtml(String(ex.unit)) : ""; }
+function exDefaultValue(ex: any): number | null { return typeof ex?.baseline_value === "number" ? ex.baseline_value : null; }
+function exDefaultReps(ex: any): number | null {
+  return typeof ex?.default_reps === "number" ? ex.default_reps : (typeof ex?.default_reps_min === "number" ? ex.default_reps_min : null);
+}
+function setValueTextEx(set: any, ex: any): string {
+  const prog = ex?.progression || "weight";
+  const unit = exUnit(ex);
+  if (prog === "weight") return `${roundForDisplay(Number(set.weight))}${unit} × ${roundForDisplay(Number(set.reps))}회`;
+  return `${roundForDisplay(setValue(set, prog))}${unit}`;
+}
+function loggedEntrySets(logged: any, block_id: string, slug: string): any[] {
+  if (!logged || !Array.isArray(logged.blocks)) return [];
+  const b = logged.blocks.find((x: any) => x.block_id === block_id);
+  if (!b || !Array.isArray(b.entries)) return [];
+  const e = b.entries.find((x: any) => x.exercise_slug === slug);
+  return e && Array.isArray(e.sets) ? e.sets : [];
+}
+function loggedSetAt(logged: any, block_id: string, slug: string, idx: number): any {
+  return loggedEntrySets(logged, block_id, slug).find((x: any) => x.idx === idx) ?? null;
+}
+function blockKindBadge(kind: string, presc: any): string {
+  const map: Record<string, string> = {
+    superset: "슈퍼셋", circuit: "서킷", amrap: "시간 내 최대", emom: "매분(EMOM)",
+    interval: "인터벌", pyramid: "피라미드", dropset: "드롭세트", activity: "활동",
+  };
+  let label = map[kind];
+  if (!label) return "";
+  if ((kind === "superset" || kind === "circuit") && Number(presc?.rounds) > 0) label += ` · ${Number(presc.rounds)}라운드`;
+  return ` <span class="tag kind-badge">${escapeHtml(label)}</span>`;
+}
+function blockPill(kind: string, presc: any): string {
+  const u = (x: any) => escapeHtml(String(x?.unit ?? ""));
+  if (kind === "amrap" && presc?.time_cap) return `<div class="blk-pill">${roundForDisplay(Number(presc.time_cap.value))}${u(presc.time_cap)} 안에 최대한</div>`;
+  if (kind === "emom" && presc?.minutes) return `<div class="blk-pill">${escapeHtml(String(presc.minutes))}분 · 매분 시작</div>`;
+  if (kind === "interval" && (presc?.work || presc?.rounds)) {
+    const r = presc.rounds ? `${escapeHtml(String(presc.rounds))}라운드` : "";
+    const w = presc.work ? ` · ${roundForDisplay(Number(presc.work.value))}${u(presc.work)} 운동` : "";
+    const rest = presc.rest ? ` / ${roundForDisplay(Number(presc.rest.value))}${u(presc.rest)} 휴식` : "";
+    return `<div class="blk-pill">${r}${w}${rest}</div>`;
+  }
+  return "";
+}
+// 한 세트(또는 슈퍼셋 한 라운드의 한 운동) 행 — 완료(체크+값+취소) 또는 입력(기본값 채움+완료).
+function renderSetRow(routine: any, block: any, ex: any, item: any, idx: number, logged: any, editable: boolean, isFuture: boolean, showExName: boolean): string {
+  if (!ex) return `<div class="tw-set"><span class="meta">미등록 운동</span></div>`;
+  const prog = ex.progression || "weight";
+  const unit = exUnit(ex);
+  const nameTag = showExName ? `<span class="row-ex">${escapeHtml(ex.display_name)}</span>` : `<span class="tw-n">${idx + 1}</span>`;
+  const done = loggedSetAt(logged, block.block_id, ex.slug, idx);
+  if (done) {
+    const cancel = editable ? `<button class="tw-x" onclick="clearBlockSet('${routine.slug}','${block.block_id}','${ex.slug}',${idx})">취소</button>` : "";
+    return `<div class="tw-set done">${nameTag}<span class="tw-chk">${SVG_CHECK}</span><span class="tw-val">${setValueTextEx(done, ex)}</span>${cancel}</div>`;
+  }
+  if (!editable) return `<div class="tw-set">${nameTag}<span class="meta">${isFuture ? "예정" : "미기록"}</span></div>`;
+  const wv = exDefaultValue(ex);
+  const dr = (typeof item?.reps === "number" ? item.reps : null) ?? exDefaultReps(ex);
+  const inputs = prog === "weight"
+    ? `<input class="tw-in" name="w" type="number" inputmode="decimal" value="${wv ?? ""}" placeholder="무게"><span class="tw-u">${unit}</span><span class="tw-x2">×</span><input class="tw-in" name="r" type="number" inputmode="numeric" value="${dr ?? ""}" placeholder="횟수"><span class="tw-u">회</span>`
+    : `<input class="tw-in" name="v" type="number" inputmode="decimal" value="${wv ?? ""}" placeholder="값"><span class="tw-u">${unit}</span>`;
+  const rid = `${routine.slug}~${block.block_id}~${ex.slug}~${idx}`;
+  return `<div class="tw-set" data-row="${rid}">${nameTag}${inputs}<button class="tw-do" onclick="logBlockSet('${routine.slug}','${block.block_id}','${ex.slug}',${idx})">완료</button></div>`;
+}
+// 기준값보다 잘했으면 "기준값 바꿀까요?" — 제안이 아니라 실제 한 값 반영 여부를 묻기만.
+function baselineAsk(block: any, ex: any, logged: any): string {
+  if (!ex) return "";
+  const prog = ex.progression || "weight";
+  const wv = exDefaultValue(ex);
+  if (wv === null) return "";
+  const sets = loggedEntrySets(logged, block.block_id, ex.slug);
+  if (sets.length === 0) return "";
+  const better = prog === "time" ? (v: number, b: number) => v < b : (v: number, b: number) => v > b;
+  let best: number | null = null;
+  for (const s of sets) {
+    const v = setValue(s, prog);
+    if (!Number.isFinite(v)) continue;
+    if (better(v, wv) && (best === null || better(v, best))) best = v;
+  }
+  if (best === null) return "";
+  const unit = exUnit(ex);
+  const cmp = prog === "time" ? "빠르게" : "높게";
+  return `<div class="tw-ask">기준값(${roundForDisplay(wv)}${unit})보다 ${cmp} 했어요 (${roundForDisplay(best)}${unit}). 현재 기준값을 ${roundForDisplay(best)}${unit} 으로 바꿀까요? <button class="tw-yes" onclick="raiseBaseline('${ex.slug}',${best})">예</button> <span class="meta">· 아니면 그대로 두세요</span></div>`;
+}
+// 블록 하나 렌더 — 알려진 kind 는 맞춤 시각, 모르는 kind 는 note/원문 + 일반 행으로 폴백(절대 안 막힘).
+function renderBlock(block: any, routine: any, exMap: Map<string, any>, logged: any, editable: boolean, isFuture: boolean): string {
+  const kind = String(block.kind || "custom");
+  const items = Array.isArray(block.items) ? block.items : [];
+  const presc = block.prescription || {};
+  const head = `<div class="blk-hdr"><span class="blk-label">${escapeHtml(block.label || "")}</span>${blockKindBadge(kind, presc)}</div>`;
+
+  // 묶음(슈퍼셋/서킷) — 라운드 × 운동별 행
+  if ((kind === "superset" || kind === "circuit") && items.length >= 1) {
+    const maxSets = items.reduce((m: number, it: any) => Math.max(m, Number(it.sets) || 0), 0);
+    const rounds = Math.max(1, Math.min(20, Number(presc.rounds) || maxSets || 3));
+    let body = "";
+    for (let rd = 0; rd < rounds; rd++) {
+      let rows = "";
+      for (const it of items) rows += renderSetRow(routine, block, exMap.get(it.exercise_slug), it, rd, logged, editable, isFuture, true);
+      body += `<div class="round"><div class="round-n">라운드 ${rd + 1}</div>${rows}</div>`;
+    }
+    const askParts = editable ? items.map((it: any) => baselineAsk(block, exMap.get(it.exercise_slug), logged)).join("") : "";
+    return `<div class="blk"><div class="block-group">${head}${body}</div>${askParts}</div>`;
+  }
+
+  // 단순 세트(스트레이트/범위/단일) — 한 운동
+  if ((kind === "straight" || kind === "range" || kind === "single") && items.length >= 1) {
+    const it = items[0];
+    const ex = exMap.get(it.exercise_slug);
+    const nSets = Math.max(1, Math.min(20, Number(it.sets) || Number(ex?.default_sets) || (kind === "single" ? 1 : 3)));
+    let rows = "";
+    for (let i = 0; i < nSets; i++) rows += renderSetRow(routine, block, ex, it, i, logged, editable, isFuture, false);
+    return `<div class="blk">${head}${rows}${editable ? baselineAsk(block, ex, logged) : ""}</div>`;
+  }
+
+  // 인터벌/피라미드/드롭세트 — 단일 운동, 단계(라운드/단/드롭)별 행
+  if ((kind === "interval" || kind === "pyramid" || kind === "dropset") && items.length >= 1) {
+    const it = items[0];
+    const ex = exMap.get(it.exercise_slug);
+    let n = 1;
+    if (kind === "interval") n = Math.max(1, Math.min(30, Number(presc.rounds) || (Array.isArray(presc.work) ? presc.work.length : 0) || 4));
+    else if (kind === "pyramid") n = Math.max(1, Math.min(30, (Array.isArray(presc.steps) ? presc.steps.length : 0) || Number(it.sets) || 4));
+    else if (kind === "dropset") n = Math.max(2, Math.min(30, (Array.isArray(presc.drops) ? presc.drops.length : 0) || 3));
+    const pill = blockPill(kind, presc);
+    const note = block.note ? `<div class="blk-note">${escapeHtml(block.note)}</div>` : "";
+    let rows = "";
+    for (let i = 0; i < n; i++) rows += renderSetRow(routine, block, ex, it, i, logged, editable, isFuture, false);
+    return `<div class="blk">${head}${pill}${note}${rows}${editable ? baselineAsk(block, ex, logged) : ""}</div>`;
+  }
+
+  // 그 외(amrap/emom/활동/custom/모르는 kind) — pill + note/원문 + 일반 입력 행 폴백
+  const pill = blockPill(kind, presc);
+  const noteLine = block.note ? `<div class="blk-note">${escapeHtml(block.note)}</div>` : "";
+  let rows = "";
+  if (items.length === 0) {
+    rows = `<div class="empty" style="padding:3px 0">${editable ? "한 뒤 AI에게 \"오늘 이거 했어\"라고 기록을 부탁하세요" : (isFuture ? "예정" : "기록 없음")}</div>`;
+  } else {
+    for (const it of items) rows += renderSetRow(routine, block, exMap.get(it.exercise_slug), it, 0, logged, editable, isFuture, true);
+  }
+  const askParts = editable ? items.map((it: any) => baselineAsk(block, exMap.get(it.exercise_slug), logged)).join("") : "";
+  return `<div class="blk">${head}${pill}${noteLine}${rows}${askParts}</div>`;
+}
+// 오늘의 운동 — 활성 배치가 가리키는 오늘 루틴(들)을 블록 순서대로.
+function renderTodayRoutineCard(s: any): string {
+  const plan = s.active_schedule;
+  let routineSlugs: string[] | null = null;
+  let bucketLabel = "";
+  let isRest = false;
+  if (plan?.assignment?.kind === "weekly") {
+    const tb = plan.today_bucket;
+    if (tb?.routine_v2_slugs?.length > 0) { routineSlugs = tb.routine_v2_slugs; bucketLabel = tb.label; }
+    else isRest = true;
+  } else if (plan?.next_bucket_hint?.routine_v2_slugs?.length > 0) {
+    routineSlugs = plan.next_bucket_hint.routine_v2_slugs; bucketLabel = plan.next_bucket_hint.label;
+  }
+  const editable = s.is_today !== false;
+  const date = s.view_date || "";
+  const today = s.today || date;
+  const isFuture = !!(date && today && date > today);
+  const title = editable ? "오늘의 운동" : (isFuture ? "예정 운동" : "지난 운동");
+
+  let html = `<div class="card today"><div class="today-top"><h3>${title}${bucketLabel ? ` · ${escapeHtml(bucketLabel)}` : ""}</h3><button class="cal-open" onclick="toggleCal()">${SVG_CAL}${escapeHtml(date)}</button></div>`;
+  html += renderCalendarPopup(date, today);
+  if (!editable) html += `<div class="today-date">읽기 전용 · <span class="lnk" onclick="goDate('${today}')">오늘로 가기</span></div>`;
+
+  const exMap = new Map<string, any>();
+  for (const ex of (s.exercises || [])) exMap.set(ex.slug, ex);
+  const routines: any[] = [];
+  if (routineSlugs) for (const sl of routineSlugs) { const r = (s.routines_v2 || []).find((x: any) => x.slug === sl); if (r) routines.push(r); }
+
+  if (routines.length === 0) {
+    const msg = isRest ? "이 날은 휴식일이에요." : "지정된 운동이 없어요 — AI에게 \"오늘 루틴 짜줘\"라고 하거나, 아래 '나의 운동'에서 골라 기록하세요.";
+    html += `<div class="empty">${msg}</div></div>`;
+    return html;
+  }
+  for (const r of routines) {
+    const logged = editable ? (s.view_workouts?.[r.slug] ?? null) : ((s.day_workouts || []).find((w: any) => w.routine_slug === r.slug) ?? null);
+    if (routines.length > 1 || r.source_text) html += `<div class="rt-name">${escapeHtml(r.display_name)}</div>`;
+    if (r.source_text) html += `<div class="rt-src">${escapeHtml(r.source_text)}</div>`;
+    const blocks = Array.isArray(r.blocks) ? r.blocks : [];
+    for (const b of blocks) html += renderBlock(b, r, exMap, logged, editable, isFuture);
+  }
+  html += "</div>";
+  return html;
+}
+// 활성 배치 카드 — 루틴 이름으로 표시.
+function renderScheduleCard(plan: any, routines: any[] = []): string {
+  if (!plan) return '<div class="card"><h3>배치</h3><div class="empty">활성 배치 없음 — 매번 골라하기 모드 또는 미설정.</div></div>';
+  const kind = plan.assignment?.kind;
+  const nameOf = (slug: string) => { const r = (routines || []).find((x: any) => x?.slug === slug); return r ? escapeHtml(r.display_name) : escapeHtml(slug); };
+  const bucketRoutines = (b: any) => (b.routine_v2_slugs || []).map(nameOf).join(", ") || '<span class="meta">없음</span>';
+  let html = `<div class="card"><h3>활성 배치 — ${escapeHtml(plan.name)}</h3>`;
+  if (kind === "weekly") {
+    const WL: Record<string, string> = { mon: "월", tue: "화", wed: "수", thu: "목", fri: "금", sat: "토", sun: "일" };
+    const order = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    const todayKey = plan.today_bucket?.weekday;
+    for (const w of order) {
+      const bk = plan.assignment.map?.[w];
+      const bucket = bk ? plan.buckets.find((b: any) => b.key === bk) : null;
+      const isToday = todayKey === w;
+      const cls = isToday ? "row hi" : "row";
+      const badge = isToday ? ' <span class="badge due">오늘</span>' : "";
+      html += `<div class="${cls}"><div class="name">${WL[w]}${badge}</div><div class="val">${bucket ? escapeHtml(bucket.label) : '<span class="meta">휴식</span>'}</div></div>`;
+    }
+  } else if (kind === "sequence") {
+    const nextKey = plan.next_bucket_hint?.key;
+    for (const k of plan.assignment.order) {
+      const bucket = plan.buckets.find((b: any) => b.key === k);
+      if (!bucket) continue;
+      const isNext = nextKey === k;
+      const cls = isNext ? "row hi" : "row";
+      const badge = isNext ? ' <span class="badge due">다음</span>' : "";
+      html += `<div class="${cls}"><div class="name">${escapeHtml(bucket.label)}${badge}</div><div class="val">${bucketRoutines(bucket)}</div></div>`;
+    }
+  } else {
+    for (const bucket of plan.buckets) html += `<div class="row stacked"><div class="name">${escapeHtml(bucket.label)}</div><div class="val">${bucketRoutines(bucket)}</div></div>`;
+  }
+  html += "</div>";
+  return html;
+}
+function formatExercisePlan(ex: any): string {
+  const sets = typeof ex.default_sets === "number" ? ex.default_sets : null;
+  if (sets === null) return "";
+  const reps = typeof ex.default_reps === "number" ? ex.default_reps : null;
+  const minOk = typeof ex.default_reps_min === "number", maxOk = typeof ex.default_reps_max === "number";
+  let base: string;
+  if (reps !== null) base = `${sets}×${reps}`;
+  else if (minOk && maxOk) base = `${sets}×${ex.default_reps_min}-${ex.default_reps_max}`;
+  else base = `${sets}세트`;
+  const ss = ex.set_size;
+  if (ss && typeof ss.value === "number" && typeof ss.unit === "string") base += ` · 세트당 ${roundForDisplay(ss.value)}${ss.unit}`;
+  return base;
+}
+// 추세 미니 그래프 — 최근 세션 본세트 평균값의 작은 선그래프(서버 생성 SVG). 추천 아님, 표시만.
+function renderSparkline(points: any[]): string {
+  if (!Array.isArray(points) || points.length < 2) return "";
+  const w = 78, h = 16, pad = 2;
+  const min = Math.min(...points), max = Math.max(...points);
+  const range = (max - min) || 1;
+  const step = (w - 2 * pad) / (points.length - 1);
+  const xy = points.map((v: number, i: number) =>
+    `${(pad + i * step).toFixed(1)},${(h - pad - ((v - min) / range) * (h - 2 * pad)).toFixed(1)}`
+  ).join(" ");
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${xy}" fill="none" stroke="#7c3aed" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
+function renderExerciseStat(ex: any): string {
+  const progTag = ex.progression ? `<span class="tag dim">${escapeHtml(progressionLabel(ex.progression))}</span>` : "";
+  const planStr = formatExercisePlan(ex);
+  const planTag = planStr ? `<span class="tag">${escapeHtml(planStr)}</span>` : "";
+  const stats = formatProgressionState(ex);
+  const spark = renderSparkline(ex.recent_points);
+  const statLine = (stats || spark) ? `<div class="stat-row">${stats}${spark}</div>` : "";
+  const goal = formatNextSessionGoal(ex);
+  const goalLine = goal ? `<div class="goal-line">${SVG_TARGET}${goal}</div>` : "";
+  const memo = ex.memo ? `<div class="memo">${SVG_NOTE}${escapeHtml(ex.memo)}</div>` : "";
+  const last = ex.last_session
+    ? `<span class="meta">${(ex.last_session.sets?.length || 0)}세트 · ${escapeHtml(String(ex.last_session.performed_at).slice(0, 10))}</span>`
+    : '<span class="meta">기록 없음</span>';
+  return `<div class="routine"><div class="routine-hdr"><div class="routine-name">${escapeHtml(ex.display_name)} ${planTag}${progTag}</div><div class="routine-last">${last}</div></div>${statLine}${goalLine}${memo}</div>`;
+}
+function renderRoutineSummary(r: any): string {
+  const blocks = Array.isArray(r.blocks) ? r.blocks : [];
+  const desc = r.source_text ? escapeHtml(r.source_text) : blocks.map((b: any) => escapeHtml(b.label || "")).filter(Boolean).join(" · ");
+  return `<div class="row stacked"><div class="name">${escapeHtml(r.display_name)}</div><div class="val">${desc || '<span class="meta">비어있음</span>'}</div></div>`;
+}
+// 나의 운동·기록 — 접힘 카드: 운동(현재/직전/최고) + 루틴 목록 + 최근 활동.
+function renderExercisesCard(exercises: any[] = [], routines: any[] = [], activities: any[] = []): string {
+  let body = "";
+  if (exercises.length === 0 && routines.length === 0 && activities.length === 0) {
+    body = '<div class="empty">등록된 운동/루틴/활동 없음 — AI에게 "스쿼트 운동 등록해줘" 처럼 말해보세요.</div>';
+  } else {
+    if (exercises.length > 0) { body += `<div class="sub-hdr">운동 ${exercises.length}</div>`; for (const ex of exercises) body += renderExerciseStat(ex); }
+    if (routines.length > 0) { body += `<div class="sub-hdr">루틴 ${routines.length}</div>`; for (const r of routines) body += renderRoutineSummary(r); }
+    if (activities.length > 0) {
+      body += `<div class="sub-hdr">최근 7일 자유 활동 ${activities.length}건</div>`;
+      for (const a of activities.slice(0, 5)) body += `<div class="row"><div class="name">${escapeHtml(a.name)} <span class="meta">(${escapeHtml(a.intensity)})</span></div><div class="val">${a.duration_minutes}분</div></div>`;
+    }
+  }
+  return `<div class="card"><details><summary class="card-sum"><span class="chev"></span>나의 운동·기록 (${exercises.length})</summary><div class="card-body">${body}</div></details></div>`;
 }
 
 function formatHmFromIso(iso: string, tz: string): string {

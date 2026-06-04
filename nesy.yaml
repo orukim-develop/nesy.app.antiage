@@ -14,129 +14,138 @@ tools:
           description: 사용자 본인이 말한 목표 문장 그대로. 한국어/영어 무관. 1~500자.
       required: [text]
 
-  - name: define_routine_exercise
+  - name: define_exercise
     description: |
-      한 운동을 "어떤 값으로 기록하고 추이를 보여줄지" 등록한다. 마도서는 다음 목표·증량을 계산/추천하지 않는다 — 기록과 추이 표시 전용.
-      progression 으로 어떤 값으로 추이를 보여줄지 + 어느 방향이 '진전'인지 선택 (표시 방향용):
-        weight — 무게 (스쿼트, 벤치프레스, 머신, isolation 등). 클수록 진전으로 표시
-        time — 시간 (4km 기어가기 10분→3분, 5km 러닝 30분→25분 등). 낮을수록 진전으로 표시
-        distance — 거리/속도 (1시간 RowErg 12500m→13000m, 트레드밀 속도 등). 클수록 진전으로 표시
-        reps — 횟수 (1세트 푸시업 max reps, 풀업 max 등 자체중). 클수록 진전으로 표시
-        hold — 유지 시간 (플랭크, L-sit, 데드행 등). 클수록 진전으로 표시
-      표준 인체 가정 금지 — 다리/팔이 없거나 의수·의족 사용자도 본인이 할 수 있는 형태(예 "기어가기", "한팔 푸시업")를 progression 에 맞게 등록 가능.
-      같은 slug 는 덮어쓴다. AI 는 사용자와 합의된 운동만 등록 — 임의 등록 금지.
+      개별 운동(동작) 하나를 "어떤 값으로 기록하고 추이를 보여줄지" 등록한다. 마도서는 다음 목표·증량을 계산/추천하지 않는다 — 기록·추이 표시 전용.
+      운동은 '원자'다. 여러 운동을 엮은 '루틴(레시피)'은 define_routine 으로 따로 만든다.
+      progression — 어떤 값으로 추이를 보고 어느 방향이 '진전'인지 (표시용):
+        weight 무게(클수록) / time 시간(낮을수록) / distance 거리·속도(클수록) / reps 횟수(클수록) / hold 유지시간(클수록).
+      표준 인체 가정 금지 — 다리/팔이 없거나 의수·의족 사용자도 본인이 할 수 있는 형태("기어가기" 등)로 등록 가능.
+      같은 slug 는 덮어쓴다. 사용자와 합의된 운동만 등록 — 임의 등록 금지.
 
-      category — 선택. progression=weight 일 때 compound/isolation 분류 라벨 (표시용). 마도서가 이 값으로 증량을 정해주지 않는다.
-
-      계획된 세트·횟수(target_sets, target_reps, target_reps_min/max) — 사용자가 스스로 정한 계획을 기록만 한다 (마도서가 정해주지 않음):
-        target_sets — 계획 세트 수. 생략 시 progression 별 기본 (weight/reps/hold=3, time/distance=1).
-        target_reps — 계획 고정 횟수 (예 5x5 의 5).
-        target_reps_min / target_reps_max — 계획 횟수 범위 (예 8~12). target_reps 가 같이 들어오면 무시(고정값 우선).
-        모두 선택값 — 축구·테니스·등산 등도 사용자가 기록 원하면 등록 가능.
-
-      set_size — 1세트의 고정 크기 ({ value, unit }, 선택). 진척 축(working_value)과 분리되는 "세트당 크기".
-        용도: 카디오 인터벌·격투 라운드처럼 1세트의 크기는 고정이고 추이는 다른 축(속도·페이스·횟수)으로 볼 때.
-        예 트레드밀 9km/h × 1분 × 20세트 → set_size={value:1, unit:"min"}, progression=distance, working_value=9, target_sets=20
-        예 RowErg 2:25 페이스 × 5분 1세트 → set_size={value:5, unit:"min"}, progression=time, working_value=2.4167, target_sets=1
-        예 태권도 3분 3라운드 발차기 20번 → set_size={value:3, unit:"min"}, progression=reps, working_value=20, target_sets=3, target_reps=20
-        스트렝스 루틴(벤치프레스 등 reps 가 가변)에는 보통 생략. 생략 시 null.
-        unit 은 자유 문자열(20자 이내). value 는 0 초과 숫자.
-
-      working_value — 사용자가 스스로 밝힌 '현재 능력치' (기록·표시 전용). 등록 시 초기값 선택 가능. 이후 update_routine_state 로만, 사용자가 '현재 능력치를 X 로' 라고 명시할 때만 갱신. 마도서가 자동 갱신하거나 갱신을 권하지 않는다.
-      memo — AI 가 계획·표시에 참고하는 자유 메모. 예 '이 머신 무게 단위 7kg', '어깨 부상 회복 중', '8월까지 가볍게'. 코드는 파싱 안 함 — 그대로 보관·표시.
-
-      흐름: ① define_routine_exercise (등록) → ② define_split_plan (묶음, 선택) → ③ log_routine_session (실행 기록). 다음 목표는 마도서가 계산하지 않는다 — 사용자가 '다음엔 X' 라고 스스로 말하면 update_routine_state 의 next_session_goal 에 그대로 기록만 한다.
+      baseline_value(현재 기준값) — 사용자가 스스로 밝힌 '현재 능력치'. 위젯 입력 기본값으로 쓰이고, 그 운동을 쓰는 모든 루틴에 반영. 등록 시 초기값 선택 가능. 이후 update_exercise 로만, 사용자가 확인할 때만 갱신. 마도서가 자동 갱신/권유하지 않는다.
+      default_* — 루틴이 따로 정하지 않을 때 쓰는 기본 처방값(사용자가 정한 계획을 기록만): default_sets(생략 시 weight/reps/hold=3, time/distance=1) / default_reps 고정횟수 / default_reps_min·max 범위.
+      set_size — 1세트 고정 크기({value,unit}, 선택). 카디오 인터벌·격투 라운드 등. 위젯에 '세트당 N{unit}' 표시. 스트렝스엔 보통 생략.
+      category — progression=weight 일 때 compound/isolation 분류 라벨(표시용). 마도서가 이 값으로 증량을 정하지 않는다.
+      memo — 자유 메모. 코드는 파싱 안 함 — 그대로 보관·표시.
+      흐름: ① define_exercise → ② define_routine(선택) → ③ define_schedule(선택) → ④ log_workout.
     inputSchema:
       type: object
       properties:
         slug:
           type: string
-          description: snake_case 식별자. 예 squat / bench_press / crawling_4km / rowerg_1hr / push_ups_max / plank.
+          description: snake_case 식별자. 예 squat / bench_press / plank / run_5k.
         display_name:
           type: string
-          description: 사용자에게 보일 이름 (한글 가능). 예 "백 스쿼트", "4km 기어가기", "1시간 RowErg".
+          description: 사용자에게 보일 이름 (한글 가능). 예 "백 스쿼트", "5km 달리기".
         progression:
           type: string
           description: "weight / time / distance / reps / hold 중 하나."
         unit:
           type: string
-          description: "값의 단위. weight: kg/lb. time: seconds/minutes. distance: meters/km. reps: reps. hold: seconds."
+          description: "값의 단위. weight: kg/lb. time: 분/초. distance: m/km. reps: 회. hold: 초."
         category:
           type: string
-          description: "선택. progression=weight 일 때 compound 또는 isolation 분류 라벨 (표시용)."
-        target_sets:
-          type: integer
-          description: "선택. 계획 세트 수 (1+). 생략 시 progression 별 기본 — weight/reps/hold=3, time/distance=1."
-        target_reps:
-          type: integer
-          description: "선택. 계획 고정 횟수 (1+, 예 5x5 의 5). progression=weight/reps 에 자연스러움. target_reps_min/max 보다 우선."
-        target_reps_min:
-          type: integer
-          description: "선택. 계획 횟수 범위 하한 (1+). target_reps_max 와 함께 사용."
-        target_reps_max:
-          type: integer
-          description: "선택. 계획 횟수 범위 상한 (target_reps_min 이상)."
-        working_value:
+          description: "선택. progression=weight 일 때 compound 또는 isolation (표시용)."
+        baseline_value:
           type: number
-          description: "선택. 사용자가 스스로 밝힌 '현재 능력치' (스쿼트 100kg, 5km 25분 등). 기록·표시 전용. 등록 시 초기 설정 가능. 이후 update_routine_state 로, 사용자가 명시할 때만 갱신."
-        memo:
-          type: string
-          description: "선택. 자유 메모 (0~1000자). 예 '이 머신 무게 단위 7kg', '어깨 부상 회복 중', '8월까지 가볍게'. 코드는 파싱 안 함 — 그대로 보관·표시."
+          description: "선택. 사용자가 밝힌 '현재 능력치'(스쿼트 100kg, 5km 28분 등, 0 이상). 위젯 입력 기본값·표시 전용."
+        default_sets:
+          type: integer
+          description: "선택. 기본 세트수(1+). 생략 시 weight/reps/hold=3, time/distance=1. 루틴 블록이 덮어쓸 수 있음."
+        default_reps:
+          type: integer
+          description: "선택. 기본 고정 횟수(1+). default_reps_min/max 보다 우선."
+        default_reps_min:
+          type: integer
+          description: "선택. 기본 횟수 범위 하한(1+). max 와 함께."
+        default_reps_max:
+          type: integer
+          description: "선택. 기본 횟수 범위 상한(min 이상)."
         set_size:
           type: object
-          description: |
-            선택. 1세트의 고정 크기 (카디오 인터벌·격투 라운드 등). 진척 축(working_value)과 분리.
-            예 트레드밀 1분/세트 → { value: 1, unit: "min" } / 태권도 3분/라운드 → { value: 3, unit: "min" } / RowErg 5분/세트 → { value: 5, unit: "min" }.
-            스트렝스(reps 가변) 루틴에는 보통 생략. unit 은 자유 문자열(예 'min', 'sec', 'm', 'km').
+          description: "선택. 1세트 고정 크기. 예 태권도 3분/라운드 → { value: 3, unit: 'min' }. unit 자유(1~20자), value 0 초과."
           properties:
             value:
               type: number
-              description: "0 초과 숫자."
             unit:
               type: string
-              description: "단위 라벨 (1~20자). 예 'min', 'sec', 'm'."
+        memo:
+          type: string
+          description: "선택. 자유 메모(0~1000자). 코드는 파싱 안 함 — 그대로 보관·표시."
       required: [slug, display_name, progression, unit]
 
-  - name: log_routine_session
+  - name: define_routine
     description: |
-      루틴 운동의 한 세션(여러 세트 묶음)을 기록한다. 기록 전용 — 마도서는 다음 목표·증량을 계산하지 않는다.
-      각 세트 구조는 routine.progression 에 따라 다름 (rpe 는 선택):
-        weight: { reps, weight, rpe?, is_warmup? }
-        time: { time, rpe?, is_warmup? }
-        distance: { distance, rpe?, is_warmup? }
-        reps: { reps, rpe?, is_warmup? }
-        hold: { hold, rpe?, is_warmup? }
-      rpe 는 선택 — 1~10 '힘들었음 점수' (높을수록 힘듦). 사용자가 스스로 말한 경우에만 기록.
+      여러 운동을 엮은 '루틴(레시피)'을 등록한다 — AI 가 사용자 자연어를 blocks 로 구조화한다. 사용자에게 문법/형식을 묻지 말 것.
+      사용자가 '스쿼트 5×5 하고 벤치랑 로우 슈퍼셋 3라운드' 처럼 말하면 → 원문을 source_text 에 그대로 보관 + 각 동작을 알맞은 block 으로 만든다.
+      blocks 의 운동(items[].exercise_slug)은 먼저 define_exercise 로 등록돼 있어야 한다. 같은 slug 면 덮어쓴다. 마도서는 추천하지 않는다 — 사용자가 말한 구성만 기록.
 
-      세트 분류 라벨 (기록·표시용):
-        1) 워밍업 세트: is_warmup=true 로 표시. 추이 표시에서 본세트와 구분.
-        2) 디로드 세션 (그날만 가볍게): is_deload=true. 세션 통째로 '디로드'로 표시.
-        3) 슈퍼셋/자이언트셋 (여러 운동을 한 묶음으로): superset_group 에 같은 키 부여해 묶음 표시. 묶을 각 routine 의 log_routine_session 을 같은 키로 호출.
+      각 block:
+        block_id — 짧은 식별자(생략 시 b1,b2.. 자동). 기록(log_workout)이 여기에 매달림.
+        kind — 반복 종류. 알려진 종류는 위젯이 맞춤 표시:
+          straight 일반세트(3×5) / range 횟수범위(3×8-12) / superset 슈퍼셋 / circuit 서킷 / amrap 시간내최대 /
+          emom 매분 / interval 인터벌 / pyramid 피라미드 / dropset 드롭세트 / single 단일(카디오·유지) / activity 일반활동(테니스 등).
+          딱 맞는 게 없으면 kind='custom'(또는 자유 문자열) + note 로 — 어떤 방식도 거부되지 않음(위젯이 note 로 폴백 표시).
+        label — ★ 사람이 읽는 한국어 설명(필수, 1~200자). 사용자에겐 이 label 만 보인다. 예 '벤치+바벨로우 슈퍼셋 3라운드'.
+        items — 이 블록의 운동들. 1개=단일, 2개+=슈퍼셋/서킷. 각 { exercise_slug, sets?, reps?, reps_min?, reps_max?, target_value?, set_size? } — 이 루틴에서만 쓰는 처방 덮어쓰기(생략 시 운동의 default_* 사용).
+        prescription — kind 별 계획값(자유 object): superset/circuit 의 rounds, amrap 의 time_cap{value,unit}, emom 의 minutes, interval 의 rounds/work/rest, pyramid 의 steps[], dropset 의 drops[] 등.
+        params — 특이 방식용 자유 칸(위 어디에도 안 맞을 때). note 와 함께 위젯이 폴백 표시.
+        note — 한 줄 자연어 설명(위젯이 못 그리는 방식의 안내용).
 
-      AI 는 사용자에게 'is_warmup' / 'is_deload' / 'superset_group' 같은 코드값 노출 금지 — 사용자 발화 언어로 합의 후 내부적으로 변환.
-      반환: { saved } 저장 결과만. 다음 목표를 자동으로 정하지 않는다 — 사용자가 '다음엔 X' 라고 스스로 말하면 update_routine_state 의 next_session_goal 에 기록.
+      kind/block_id/slug 는 사용자에게 절대 노출 금지 — label/source_text(자연어)로만 말한다.
     inputSchema:
       type: object
       properties:
         slug:
           type: string
-          description: 등록된 routine 의 slug.
-        sets:
+          description: snake_case 식별자. 예 push_a / full_body / leg_day.
+        display_name:
+          type: string
+          description: 사용자에게 보일 루틴 이름. 예 "푸시 A", "전신 루틴".
+        source_text:
+          type: string
+          description: "사용자가 말한 원문 그대로(0~2000자). 위젯에 사람 글로 노출 — '마도서가 지어낸 게 아님'을 보장."
+        blocks:
           type: array
-          description: "세트 배열. progression 에 맞는 필드 + 선택 is_warmup. 예 weight progression: { reps, weight, rpe, is_warmup? }. is_warmup=true 인 세트는 progression 추론에서 제외."
+          description: "블록 배열(1개 이상). 각 { block_id?, kind, label, items:[{exercise_slug, sets?, reps?, reps_min?, reps_max?, target_value?, set_size?}], prescription?, params?, note? }."
+        memo:
+          type: string
+          description: "선택. 자유 메모(0~1000자)."
+      required: [slug, display_name, blocks]
+
+  - name: log_workout
+    description: |
+      운동 실행 한 세션을 기록한다 — 블록·운동·세트별 실제값. 기록 전용 (마도서는 다음 목표·증량을 계산하지 않는다).
+      routine_slug — 어느 루틴을 했는지(define_routine 의 slug). 정해둔 루틴 없이 즉흥이면 '_adhoc' 또는 생략.
+      blocks — 한 세션의 블록들. 각 { block_id, kind?, entries:[{ exercise_slug, sets:[...] }], rounds_completed? }.
+        entries — 그 블록에서 한 운동별 실제 세트. 슈퍼셋/서킷이면 한 block 의 entries 에 여러 운동을 같은 block_id 로 넣는다(꼬리표 불필요).
+        각 세트 구조는 그 운동의 progression 에 따름 (rpe 선택):
+          weight { reps, weight, rpe?, is_warmup? } / time { time, ... } / distance { distance, ... } / reps { reps, ... } / hold { hold, ... }.
+        rpe 1~10 '힘들었음 점수' — 사용자가 스스로 말한 경우만.
+        rounds_completed(선택) — amrap/슈퍼셋 등에서 '완료 라운드 수'.
+      세트 분류(추이 계산에서 자동 분리): sets[].is_warmup=true 워밍업 / is_deload=true 그날 전체 가볍게 한 날(세션 레벨).
+      코드값(is_warmup/is_deload/kind/block_id) 사용자 노출 금지 — 사용자 발화 언어로 합의 후 내부 변환.
+      반환 { saved }. 다음 목표는 사용자가 '다음엔 X' 라고 스스로 말할 때만 update_exercise 의 next_session_goal 에 기록.
+    inputSchema:
+      type: object
+      properties:
+        routine_slug:
+          type: string
+          description: "한 루틴(define_routine)의 slug. 정해둔 루틴 없이 즉흥이면 '_adhoc' 또는 생략."
+        blocks:
+          type: array
+          description: "블록 배열(1개 이상). 각 { block_id, kind?, entries:[{ exercise_slug, sets:[progression 에 맞는 세트들] }], rounds_completed? }."
+        is_deload:
+          type: boolean
+          description: "선택. 그날 전체 가볍게 한 날이면 true. 세션 통째로 progression 추론 제외. 기본 false."
         performed_at:
           type: string
           description: "ISO 8601 시각. 생략하면 호출 시점."
         note:
           type: string
           description: 선택. 컨디션·부상 메모.
-        is_deload:
-          type: boolean
-          description: "선택. 디로드 세션이면 true (그날만 가볍게). 세션 통째로 progression 추론 제외. 기본 false."
-        superset_group:
-          type: string
-          description: "선택. 슈퍼셋/자이언트셋 그룹 키 (1~64자, AI 가 'ss-<짧은랜덤>' 형태로 생성). 같은 키로 호출된 다른 routine 세션들과 묶임. 각 routine progression 엔 영향 없음."
-      required: [slug, sets]
+      required: [blocks]
 
   - name: log_activity
     description: |
@@ -349,97 +358,86 @@ tools:
           description: "임의 구조. 스칼라는 { v: ... } 로 감싸기. 예 { v: 2.5 }, { items: ['땅콩','갑각류'] }, { side: 'left', since: '2020' }."
       required: [axis, slug, label, value]
 
-  - name: define_split_plan
+  - name: define_schedule
     description: |
-      분할 계획을 등록한다 — 운동을 묶음(bucket)으로 묶고, 언제(요일/순환/자유) 할지 매핑.
-      같은 slug 면 덮어쓴다. is_active=true 면 다른 plan 들은 자동 비활성.
-      여러 plan 저장 가능(시각화·비교용) — 활성은 1개만.
+      배치(분할 계획)를 등록한다 — '루틴'을 묶음(bucket)으로 묶고, 언제(요일/순환/자유) 할지 매핑. 옛 split_plan 의 후신.
+      ★ 묶음은 개별 운동이 아니라 '루틴(define_routine)'을 가리킨다(routine_v2_slugs).
+      같은 slug 면 덮어쓴다. is_active=true 면 다른 배치 자동 비활성(활성 1개). 여러 배치 저장 가능(비교용).
 
-      buckets — 운동 묶음 배열. 각 [{ key, label, routine_slugs }].
-        key: 묶음 식별자(예 "A","B","push","pull","upper"). 짧고 사람이 알아보기 쉬운 것.
-        label: 사용자에게 보일 이름. 예 "가슴/삼두".
-        routine_slugs: 이 묶음에 들어가는 등록된 routine slug 들.
-
+      buckets — 묶음 배열. 각 { key, label, routine_v2_slugs }.
+        key: 묶음 식별자(예 "push","pull","full"). label: 사용자에게 보일 이름. routine_v2_slugs: 이 묶음의 등록된 루틴 slug 들.
       assignment — 묶음 → 시점 매핑.
-        kind=weekly: 요일 매핑. map: { mon, tue, wed, thu, fri, sat, sun → bucket key 또는 null(휴식). }
-        kind=sequence: 순환. order: ["A","B","C","D"]. get_state 가 최근 세션 보고 다음 차례 추론.
-        kind=freestyle: 매핑 없음 — 묶음만 등록해두고 매번 자유 선택. AI 가 사용자에게 묶음 보여주고 골라달라고 함.
+        kind=weekly: 요일 매핑. map: { mon..sun → bucket key 또는 null(휴식) }.
+        kind=sequence: 순환. order: ["A","B","C"]. get_state 가 최근 기록 보고 다음 차례 추론.
+        kind=freestyle: 매핑 없음 — 묶음만 등록, 매번 자유 선택.
+      체리피커(매번 골라하는 경우)는 배치 등록 안 함 — define_schedule 호출하지 말 것.
 
-      체리피커(어떤 묶음도 없이 등록된 routine 중에서 매번 골라하는 경우)는 split_plan 등록 안 함 — define_split_plan 호출하지 말 것.
-
-      예시:
-        4분할 순환: buckets=[A:가슴/삼두, B:등/이두, C:하체, D:어깨/복근], assignment={kind:"sequence", order:["A","B","C","D"]}
-        주간 5분할: assignment={kind:"weekly", map:{mon:"A", tue:"B", wed:"C", thu:"D", fri:"E", sat:null, sun:null}}
-        자유 그룹핑: assignment={kind:"freestyle"} — 묶음만 정의
-
-      활성 plan 바꾸려면: AI 가 get_state 로 기존 plan 읽어서 같은 buckets/assignment 로 is_active=true 만 바꿔 재호출.
+      활성 배치 바꾸려면: get_state 로 기존 배치 읽어 같은 buckets/assignment 로 is_active=true 만 바꿔 재호출.
     inputSchema:
       type: object
       properties:
         slug:
           type: string
-          description: snake_case 식별자. 예 four_day_split / weekly_5day / freestyle_groups.
+          description: snake_case 식별자. 예 weekly_split / four_day_cycle.
         name:
           type: string
-          description: "사용자에게 보일 이름. 예 '근비대 4분할 A→B→C→D', '주간 5분할'."
+          description: "사용자에게 보일 이름. 예 '주간 분할', '4분할 A→B→C→D'."
         buckets:
           type: array
-          description: "묶음 배열. [{key, label, routine_slugs:[...]}]. 1개 이상."
+          description: "묶음 배열. [{ key, label, routine_v2_slugs:[...] }]. 1개 이상. routine_v2_slugs 는 등록된 루틴 slug."
         assignment:
           type: object
           additionalProperties: true
           description: "묶음 → 시점 매핑. {kind:'weekly', map:{mon,tue,...}} 또는 {kind:'sequence', order:[...]} 또는 {kind:'freestyle'}."
         is_active:
           type: boolean
-          description: "선택. true 면 이 plan 활성화 + 기존 활성 plan 자동 비활성. 생략 시 false."
+          description: "선택. true 면 이 배치 활성화 + 기존 활성 자동 비활성. 생략 시 false."
       required: [slug, name, buckets, assignment]
 
-  - name: update_routine_state
+  - name: update_exercise
     description: |
-      등록된 routine 의 비-구조 필드(현재 능력치·계획·메모·다음 목표)를 부분 업데이트한다 (patch). 기록 전용.
-      같은 slug 의 routine 이 이미 있어야 함. 제공된 필드만 덮어쓰고, 생략한 필드는 그대로 유지.
-      필드를 명시적으로 클리어하려면 null 로 명시 (예 working_value: null, memo: null 또는 "").
+      등록된 운동(exercise)의 비-구조 필드(현재 기준값·기본 처방·메모·다음 목표·라벨)를 부분 업데이트한다 (patch). 기록 전용.
+      같은 slug 의 운동이 이미 있어야 함. 제공된 필드만 덮어쓰고 생략한 필드는 유지. 명시적 클리어는 null.
 
-      display_name — 사용자에게 보일 라벨만 변경 (구조 영향 X). set_size 추가 시 라벨에 같은 정보(분/세트 시간 등) 중복이면 정리. 예 'RowErg (5분짜리)' → 'RowErg'. 1~200자.
-      working_value — 사용자가 스스로 밝힌 '현재 능력치'. 사용자가 '현재 능력치를 X 로' 라고 명시할 때만 갱신. 마도서가 갱신을 권하거나 자동 갱신하지 않는다.
-      memo — 자유 메모 (0~1000자). 예 '이 머신 무게 단위 7kg', '어깨 부상 회복 중'. 코드는 파싱 안 함 — 그대로 보관·표시.
-      next_session_goal — 다음 세션 목표를 사용자가 직접 지정 ({ value, note? }). 사용자가 '다음엔 100kg 해볼래' 같이 스스로 표현했을 때만 사용. source 는 'manual' 로 마크. 마도서가 자동으로 채우지 않는다.
-      target_sets / target_reps / target_reps_min / target_reps_max — 사용자가 정한 계획 조정.
-      set_size — 1세트 고정 크기 ({value, unit}). null 로 클리어. 보통 등록 시점에 정함 — 운영 중 변경은 드뭄.
-
-      구조 변경 (progression / unit / category) 이 필요하면 define_routine_exercise 재호출 — 그 경우 working_value/memo 도 같이 다시 명시해야 보존됨.
+      baseline_value — 사용자가 밝힌 '현재 기준값/능력치'. ★ 사용자가 기준값보다 잘해서 '바꿀까요?'에 '예' 했을 때, 또는 '현재 능력치를 X 로' 라고 명시할 때만 갱신(source 자동 마크). 마도서가 자동 갱신/권유하지 않는다. 위젯의 '바꿀까요?'는 제안이 아니라 실제 한 값을 반영할지 묻는 것.
+      display_name — 라벨만 변경(구조 영향 X). 1~200자.
+      memo — 자유 메모(0~1000자). 코드 파싱 안 함.
+      next_session_goal — 다음 목표를 사용자가 직접 지정 ({ value, note? }). 사용자가 '다음엔 100kg' 처럼 스스로 말할 때만. source='manual'. 마도서가 자동으로 채우지 않는다.
+      default_sets / default_reps / default_reps_min / default_reps_max — 사용자가 정한 기본 처방 조정.
+      set_size — 1세트 고정 크기({value,unit}). null 로 클리어.
+      구조 변경(progression/unit/category)이 필요하면 define_exercise 재호출.
     inputSchema:
       type: object
       properties:
         slug:
           type: string
-          description: 업데이트할 routine 의 slug.
+          description: 업데이트할 운동의 slug.
         display_name:
           type: string
-          description: "선택. 라벨 새 값 (1~200자). set_size 추가/변경 시 라벨 중복 정리에 사용 — 예 'RowErg (5분짜리)' → 'RowErg'."
-        working_value:
+          description: "선택. 라벨 새 값(1~200자)."
+        baseline_value:
           type: number
-          description: "선택. 사용자가 밝힌 '현재 능력치' 새 값 (0 이상). null 로 명시하면 클리어."
+          description: "선택. '현재 기준값' 새 값(0 이상). null 로 명시하면 클리어."
         memo:
           type: string
-          description: "선택. 메모 새 값 (0~1000자). null 또는 빈 문자열로 클리어."
-        target_sets:
+          description: "선택. 메모 새 값(0~1000자). null 또는 빈 문자열로 클리어."
+        default_sets:
           type: integer
-          description: "선택. 계획 세트수 (1 이상)."
-        target_reps:
+          description: "선택. 기본 세트수(1 이상)."
+        default_reps:
           type: integer
-          description: "선택. 계획 고정 횟수 (1 이상). null 로 명시하면 클리어 (그러면 min/max 가능)."
-        target_reps_min:
+          description: "선택. 기본 고정 횟수(1 이상). null 로 클리어(그러면 min/max 가능)."
+        default_reps_min:
           type: integer
-          description: "선택. 계획 횟수 범위 하한. null 로 명시하면 클리어 (max 도 같이)."
-        target_reps_max:
+          description: "선택. 기본 횟수 범위 하한. null 로 클리어(max 도 같이)."
+        default_reps_max:
           type: integer
-          description: "선택. 계획 횟수 범위 상한."
+          description: "선택. 기본 횟수 범위 상한."
         next_session_goal:
           type: object
           description: |
-            선택. 다음 세션 목표를 사용자가 직접 지정. { value: number, note?: string(0~200자) }.
-            null 로 명시하면 클리어. source 는 'manual' 로 마크. 마도서가 자동으로 채우거나 덮어쓰지 않는다.
+            선택. 다음 목표를 사용자가 직접 지정. { value: number, note?: string(0~200자) }.
+            null 로 명시하면 클리어. source='manual'. 마도서가 자동으로 채우거나 덮어쓰지 않는다.
           properties:
             value:
               type: number
@@ -447,7 +445,7 @@ tools:
               type: string
         set_size:
           type: object
-          description: "선택. 1세트 고정 크기 새 값 { value, unit }. null 로 명시하면 클리어."
+          description: "선택. 1세트 고정 크기 { value, unit }. null 로 클리어."
           properties:
             value:
               type: number
@@ -455,19 +453,43 @@ tools:
               type: string
       required: [slug]
 
+  - name: update_routine
+    description: |
+      등록된 루틴(define_routine)의 라벨·원문·블록·메모를 부분 업데이트한다 (patch). 사용자가 '이 루틴에서 로우 빼줘' 처럼 말하면 AI 가 새 blocks 로 다시 구조화해 넣는다.
+      같은 slug 의 루틴이 이미 있어야 함. 제공된 필드만 덮어쓴다. blocks 를 주면 통째로 교체(부분 아님).
+    inputSchema:
+      type: object
+      properties:
+        slug:
+          type: string
+          description: 업데이트할 루틴의 slug.
+        display_name:
+          type: string
+          description: "선택. 루틴 이름 새 값(1~200자)."
+        source_text:
+          type: string
+          description: "선택. 사용자 원문 새 값(0~2000자). null 또는 빈 문자열로 클리어."
+        blocks:
+          type: array
+          description: "선택. 블록 배열 통째 교체(define_routine 과 같은 형식, 1개 이상)."
+        memo:
+          type: string
+          description: "선택. 메모(0~1000자). null 또는 빈 문자열로 클리어."
+      required: [slug]
+
   - name: delete_entity
     description: |
       등록된 entity 또는 과거 기록 한 건을 삭제한다. 사용자가 명시적으로 "지워줘" / "잘못 입력했어" 라고 한 경우에만 호출.
 
       두 부류:
-        정의(definition) — routine / metric / reminder / fact / split_plan / meal_preset: id 는 slug (또는 reminder id, meal_preset 은 프리셋 slug). 정의 자체만 삭제, 과거 기록은 남음.
-        기록(record) — meal / measure / session / activity: id 는 전체 storage key (prefix 포함). get_state 에서 가져옴:
+        정의(definition) — exercise / routine_v2 / schedule / metric / reminder / fact / meal_preset: id 는 slug (reminder 는 reminder id, meal_preset 은 프리셋 slug). 정의 자체만 삭제, 과거 기록은 남음.
+        기록(record) — meal / measure / workout / activity: id 는 전체 storage key (prefix 포함). get_state 에서 가져옴:
           meal → meals_today.items[].id ('meal:...')
           measure → metrics[].latest_id ('measure:slug:...')
-          session → routines[].last_session.id ('session:slug:...')
+          workout → exercises[].last_session.id ('workout:...')
           activity → recent_activities[].id ('activity:...')
 
-      session 삭제는 그 기록만 지운다 — 사용자가 직접 정한 next_session_goal 은 건드리지 않는다 (재계산/클리어 없음).
+      workout 삭제는 그 기록만 지운다 — 사용자가 직접 정한 next_session_goal 은 건드리지 않는다 (재계산/클리어 없음).
 
       끼니(meal) 의 단순 수정(name/kcal/macro 등 값만 변경)은 delete 대신 log_meal({id:..., ...새 값}) upsert 사용 — 단순. delete 는 진짜로 없애야 할 때만.
       id 는 사용자에게 절대 노출 금지 — AI 가 내부에서 get_state 조회 후 사용.
@@ -476,10 +498,10 @@ tools:
       properties:
         kind:
           type: string
-          description: "routine / metric / reminder / fact / split_plan / meal_preset / meal / measure / session / activity 중 하나."
+          description: "exercise / routine_v2 / schedule / metric / reminder / fact / meal_preset / meal / measure / workout / activity 중 하나."
         id:
           type: string
-          description: "정의는 slug (reminder 는 reminder id, meal_preset 은 프리셋 slug). 기록은 'meal:...' / 'measure:slug:...' / 'session:slug:...' / 'activity:...' 형식의 전체 storage key — get_state 에서 가져옴."
+          description: "정의는 slug (reminder 는 reminder id, meal_preset 은 프리셋 slug). 기록은 'meal:...' / 'measure:slug:...' / 'workout:...' / 'activity:...' 형식의 전체 storage key — get_state 에서 가져옴."
         axis:
           type: string
           description: "kind=fact 일 때만 필수. exercise / health_metric / diet_reminder / baseline 중 하나."
@@ -499,14 +521,15 @@ tools:
         - settings: { timezone, daily_kcal_reference }
         - server_now / server_now_local: 추측 금지용 서버 기준 시각
         - metrics: 등록 지표들 + 각각의 최근 측정값(latest_id 포함) + 사용자가 정한 범위 대비 위치 + 7일 평균 + 샘플 수
-        - routines: 등록 루틴들 + 각각의 progression + 최근 세션(last_session.id 포함) + progression_state ({ working_value, current_value, current_at, pr_value, pr_at, baseline_value, baseline_at, direction }) + memo + next_session_goal ({ value, computed_at, source: 'manual', note })
+        - exercises: 등록 운동(원자)들 + progression + baseline_value + 최근 세션(last_session.id='workout:...' 포함) + progression_state ({ working_value, current_value, current_at, pr_value, pr_at, baseline_value, baseline_at, direction }) + memo + next_session_goal ({ value, source:'manual', note })
+        - routines_v2: 등록 루틴(레시피)들 — { slug, display_name, source_text, blocks:[{ block_id, kind, label, items, prescription, params, note }] }
         - recent_activities: 최근 7일 비루틴 활동 (각 항목에 id 포함 — delete_entity 용)
         - meals_today: 오늘(timezone 기준) 끼 합계 + 항목 (items[].id — log_meal upsert / delete_entity 용)
         - meal_presets: 등록된 끼 프리셋 [{slug, name, kcal, protein_g, carbs_g, fat_g, defined_at}]. slug 는 log_meal({from_preset_slug}) 또는 delete_entity({kind:'meal_preset', id:slug}) 에 사용. 사용자에게 slug 노출 금지 — name 으로 자연어 표현.
         - reminders: 등록 알람들 + 오늘 슬롯별 상태(future/due/acked/missed)
         - user_facts: { exercise, health_metric, diet_reminder, baseline } — 축별 fact 묶음
-        - split_plans: 등록된 모든 분할 계획 목록
-        - active_split_plan: 활성 plan + today_bucket(weekly) 또는 next_bucket_hint(sequence). 없으면 null.
+        - schedules: 등록된 모든 배치 목록
+        - active_schedule: 활성 배치 + today_bucket(weekly) 또는 next_bucket_hint(sequence). 묶음은 routine_v2_slugs(루틴)을 가리킴. 없으면 null.
       list_* 함수 대신 이 함수가 모든 조회를 커버한다.
 
 user_settings:
@@ -539,6 +562,10 @@ visualization:
         properties:
           kind: { type: string }
           slug: { type: string }
+          routine: { type: string }
+          block_id: { type: string }
+          exercise: { type: string }
+          value: { type: number }
           i: { type: number }
           w: { type: string }
           r: { type: string }
