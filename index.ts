@@ -192,187 +192,6 @@ function parseSetSize(v: any): { value: number; unit: string } | null {
   return { value, unit };
 }
 
-async function defineRoutine(args: any, data: Data) {
-  const slug = String(args.slug ?? "").trim();
-  if (!/^[a-z][a-z0-9_]*$/.test(slug)) throw new Error("slug 는 snake_case (소문자/숫자/_).");
-  const display_name = String(args.display_name ?? "").trim();
-  if (!display_name) throw new Error("display_name 필수.");
-  const progression = String(args.progression ?? "weight").trim();
-  if (!PROGRESSIONS.includes(progression as Progression)) {
-    throw new Error(`progression 은 ${PROGRESSIONS.join(" / ")} 중 하나.`);
-  }
-  const unit = String(args.unit ?? "").trim();
-  if (!unit) throw new Error("unit 필수.");
-
-  let category: string | null = null;
-  if (progression === "weight") {
-    category = String(args.category ?? "").trim();
-    if (!["compound", "isolation"].includes(category)) {
-      throw new Error("progression=weight 일 때 category 는 compound 또는 isolation.");
-    }
-  } else if (args.category) {
-    category = String(args.category);
-  }
-
-  const target_sets_raw = parsePositiveInt(args.target_sets, "target_sets");
-  const target_sets = target_sets_raw ?? defaultTargetSets(progression);
-  const target_reps = parsePositiveInt(args.target_reps, "target_reps");
-  let target_reps_min = parsePositiveInt(args.target_reps_min, "target_reps_min");
-  let target_reps_max = parsePositiveInt(args.target_reps_max, "target_reps_max");
-  // 고정값 우선 — target_reps 가 있으면 range 무시
-  if (target_reps !== null) {
-    target_reps_min = null;
-    target_reps_max = null;
-  } else if (target_reps_min !== null && target_reps_max !== null) {
-    if (target_reps_min > target_reps_max) {
-      throw new Error("target_reps_min 은 target_reps_max 이하.");
-    }
-  } else if ((target_reps_min !== null) !== (target_reps_max !== null)) {
-    throw new Error("target_reps_min 과 target_reps_max 는 같이 입력 (둘 다 또는 둘 다 생략).");
-  }
-
-  // working_value: 등록 시 초기값 (선택)
-  let working_value: number | null = null;
-  if (args.working_value !== undefined && args.working_value !== null) {
-    const wv = Number(args.working_value);
-    if (!Number.isFinite(wv) || wv < 0) throw new Error("working_value 는 0 이상의 숫자.");
-    working_value = wv;
-  }
-
-  // memo: 자유 텍스트 (선택)
-  let memo: string | null = null;
-  if (args.memo !== undefined && args.memo !== null && args.memo !== "") {
-    const m = String(args.memo);
-    if (m.length > 1000) throw new Error("memo 는 1000자 이내.");
-    memo = m;
-  }
-
-  // set_size: 1세트의 고정 크기 (선택). 카디오 인터벌(트레드밀 1분), 격투 라운드(3분), RowErg 인터벌(5분) 등.
-  const set_size = parseSetSize(args.set_size);
-
-  const routine = {
-    slug, display_name, progression, unit, category,
-    target_sets,
-    target_reps,
-    target_reps_min,
-    target_reps_max,
-    working_value,
-    memo,
-    set_size,
-    defined_at: nowIso(),
-  };
-  await data.set(`routine:${slug}`, routine);
-  return { routine };
-}
-
-async function updateRoutineState(args: any, data: Data) {
-  const slug = String(args.slug ?? "").trim();
-  if (!slug) throw new Error("slug 필수.");
-  const existing = await data.get(`routine:${slug}`);
-  if (!existing) throw new Error(`등록되지 않은 운동 slug: ${slug}. define_routine_exercise 먼저.`);
-
-  const patch: Record<string, any> = { ...existing };
-
-  // display_name: string (라벨만 변경 — 구조 영향 X)
-  if ("display_name" in args && args.display_name !== null && args.display_name !== undefined) {
-    const dn = String(args.display_name).trim();
-    if (!dn) throw new Error("display_name 은 비어있을 수 없음.");
-    if (dn.length > 200) throw new Error("display_name 은 200자 이내.");
-    patch.display_name = dn;
-  }
-
-  // working_value: number | null
-  if ("working_value" in args) {
-    if (args.working_value === null) {
-      patch.working_value = null;
-    } else {
-      const wv = Number(args.working_value);
-      if (!Number.isFinite(wv) || wv < 0) throw new Error("working_value 는 0 이상의 숫자 또는 null.");
-      patch.working_value = wv;
-    }
-  }
-
-  // memo: string | null (빈 문자열도 클리어 취급)
-  if ("memo" in args) {
-    if (args.memo === null || args.memo === "") {
-      patch.memo = null;
-    } else {
-      const m = String(args.memo);
-      if (m.length > 1000) throw new Error("memo 는 1000자 이내.");
-      patch.memo = m;
-    }
-  }
-
-  // target_sets
-  if ("target_sets" in args && args.target_sets !== null && args.target_sets !== undefined) {
-    patch.target_sets = parsePositiveInt(args.target_sets, "target_sets")!;
-  }
-
-  // set_size: { value, unit } | null (명시적 클리어)
-  if ("set_size" in args) {
-    patch.set_size = args.set_size === null ? null : parseSetSize(args.set_size);
-  }
-
-  // target_reps + range: 같은 규칙 — 고정 우선, 한쪽만 X
-  let tr = "target_reps" in args ? args.target_reps : undefined;
-  let trMin = "target_reps_min" in args ? args.target_reps_min : undefined;
-  let trMax = "target_reps_max" in args ? args.target_reps_max : undefined;
-
-  // 입력된 필드가 하나라도 있으면 셋 다 함께 재계산
-  if (tr !== undefined || trMin !== undefined || trMax !== undefined) {
-    const newReps = tr === undefined
-      ? (typeof existing.target_reps === "number" ? existing.target_reps : null)
-      : (tr === null ? null : parsePositiveInt(tr, "target_reps"));
-    let newMin = trMin === undefined
-      ? (typeof existing.target_reps_min === "number" ? existing.target_reps_min : null)
-      : (trMin === null ? null : parsePositiveInt(trMin, "target_reps_min"));
-    let newMax = trMax === undefined
-      ? (typeof existing.target_reps_max === "number" ? existing.target_reps_max : null)
-      : (trMax === null ? null : parsePositiveInt(trMax, "target_reps_max"));
-
-    if (newReps !== null) {
-      newMin = null; newMax = null;
-    } else if (newMin !== null && newMax !== null) {
-      if (newMin > newMax) throw new Error("target_reps_min 은 target_reps_max 이하.");
-    } else if ((newMin !== null) !== (newMax !== null)) {
-      throw new Error("target_reps_min 과 target_reps_max 는 같이 설정 (둘 다 또는 둘 다 null).");
-    }
-    patch.target_reps = newReps;
-    patch.target_reps_min = newMin;
-    patch.target_reps_max = newMax;
-  }
-
-  // next_session_goal: { value, note? } | null
-  // 사용자 수동 지정 — source="manual" 로 마크. null = 클리어.
-  if ("next_session_goal" in args) {
-    if (args.next_session_goal === null) {
-      patch.next_session_goal = null;
-    } else if (typeof args.next_session_goal === "object") {
-      const g = args.next_session_goal;
-      const v = Number(g.value);
-      if (!Number.isFinite(v)) throw new Error("next_session_goal.value 는 숫자.");
-      let gnote: string | null = null;
-      if (g.note !== undefined && g.note !== null && g.note !== "") {
-        const n = String(g.note);
-        if (n.length > 200) throw new Error("next_session_goal.note 는 200자 이내.");
-        gnote = n;
-      }
-      patch.next_session_goal = {
-        value: v,
-        computed_at: nowIso(),
-        source: "manual",
-        note: gnote,
-      };
-    } else {
-      throw new Error("next_session_goal 은 { value, note? } 또는 null.");
-    }
-  }
-
-  patch.updated_at = nowIso();
-  await data.set(`routine:${slug}`, patch);
-  return { routine: patch };
-}
-
 function normalizeSet(s: any, progression: string): any {
   // rpe('힘들었음 점수', 0~10) 는 선택 — 주면 기록만 한다. 마도서는 rpe 로 아무것도 추천/계산하지 않음.
   let rpe: number | null = null;
@@ -425,31 +244,6 @@ function setValue(s: any, progression: string): number {
     case "hold": return Number(s.hold);
     default: return NaN;
   }
-}
-
-async function logSession(args: any, data: Data) {
-  const slug = String(args.slug ?? "");
-  const routine = await data.get(`routine:${slug}`);
-  if (!routine) throw new Error(`등록되지 않은 운동 slug: ${slug}. define_routine_exercise 먼저.`);
-  const sets = Array.isArray(args.sets) ? args.sets : [];
-  if (sets.length === 0) throw new Error("sets 1개 이상 필요.");
-  const progression = routine.progression || "weight";
-  const normalized = sets.map((s: any) => normalizeSet(s, progression));
-  const performed_at = String(args.performed_at ?? nowIso());
-  const note = args.note ? String(args.note) : undefined;
-  const is_deload = args.is_deload === true;
-  let superset_group: string | null = null;
-  if (args.superset_group !== undefined && args.superset_group !== null && args.superset_group !== "") {
-    const sg = String(args.superset_group).trim();
-    if (sg.length === 0 || sg.length > 64) throw new Error("superset_group 은 1~64자.");
-    superset_group = sg;
-  }
-  const session: any = { slug, sets: normalized, performed_at, progression, is_deload, superset_group };
-  if (note) session.note = note;
-  await data.set(`session:${slug}:${performed_at}:${shortRand()}`, session);
-  // 마도서는 세션을 기록만 한다 — 다음 목표를 계산·추천하지 않음.
-  // (다음 목표는 사용자가 직접 말할 때만 update_routine_state 로 기록됨)
-  return { saved: session };
 }
 
 async function logActivity(args: any, data: Data) {
@@ -1107,68 +901,6 @@ async function defineUserFact(args: any, data: Data) {
   return { fact };
 }
 
-async function defineSplitPlan(args: any, data: Data) {
-  const slug = String(args.slug ?? "").trim();
-  if (!/^[a-z][a-z0-9_]*$/.test(slug)) throw new Error("slug 는 snake_case.");
-  const name = String(args.name ?? "").trim();
-  if (!name) throw new Error("name 필수.");
-
-  const rawBuckets = Array.isArray(args.buckets) ? args.buckets : null;
-  if (!rawBuckets || rawBuckets.length === 0) throw new Error("buckets 1개 이상 필요.");
-  const buckets = rawBuckets.map((b: any, i: number) => {
-    const key = String(b?.key ?? "").trim();
-    if (!key) throw new Error(`buckets[${i}].key 필수.`);
-    const label = String(b?.label ?? "").trim();
-    if (!label) throw new Error(`buckets[${i}].label 필수.`);
-    const routine_slugs = Array.isArray(b?.routine_slugs) ? b.routine_slugs.map((x: any) => String(x)) : [];
-    return { key, label, routine_slugs };
-  });
-  const keys = new Set(buckets.map((b: any) => b.key));
-  if (keys.size !== buckets.length) throw new Error("buckets.key 중복.");
-
-  const rawAssign = args.assignment;
-  if (!rawAssign || typeof rawAssign !== "object") throw new Error("assignment object 필수.");
-  const kind = String(rawAssign.kind ?? "").trim();
-  if (!SPLIT_KINDS.includes(kind as any)) {
-    throw new Error(`assignment.kind 는 ${SPLIT_KINDS.join(" / ")} 중 하나.`);
-  }
-  let assignment: any = { kind };
-  if (kind === "weekly") {
-    const map = rawAssign.map;
-    if (!map || typeof map !== "object") throw new Error("assignment.kind=weekly 일 때 map object 필수.");
-    const norm: Record<string, string | null> = {};
-    for (const w of WEEKDAYS) {
-      const v = (map as any)[w];
-      if (v === null || v === undefined || v === "") norm[w] = null;
-      else {
-        const sv = String(v);
-        if (!keys.has(sv)) throw new Error(`assignment.map.${w}="${sv}" 가 buckets.key 에 없음.`);
-        norm[w] = sv;
-      }
-    }
-    assignment.map = norm;
-  } else if (kind === "sequence") {
-    const order = Array.isArray(rawAssign.order) ? rawAssign.order.map((x: any) => String(x)) : [];
-    if (order.length === 0) throw new Error("assignment.kind=sequence 일 때 order 1개 이상.");
-    for (const k of order) if (!keys.has(k)) throw new Error(`assignment.order 의 "${k}" 가 buckets.key 에 없음.`);
-    assignment.order = order;
-  }
-
-  const is_active = !!args.is_active;
-  if (is_active) {
-    const existing = (await data.list("split_plan:")).map(r => r.value).filter(nonNull);
-    for (const p of existing) {
-      if (p.slug !== slug && p.is_active) {
-        await data.set(`split_plan:${p.slug}`, { ...p, is_active: false });
-      }
-    }
-  }
-
-  const plan = { slug, name, buckets, assignment, is_active, defined_at: nowIso() };
-  await data.set(`split_plan:${slug}`, plan);
-  return { split_plan: plan };
-}
-
 async function deleteEntity(args: any, data: Data) {
   const kind = String(args.kind ?? "").trim();
   const id = String(args.id ?? "").trim();
@@ -1232,14 +964,12 @@ async function getState(data: Data) {
   const nowMin = hhmmToMin(hhmmInTz(settings.timezone));
   const sevenDaysAgo = Date.now() - 7 * 86400 * 1000;
 
-  const [metricDefsRaw, routineDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, splitPlansRaw, mealPresetsRaw, exerciseDefsRaw, routineV2Raw, scheduleRaw, workoutsRaw] = await Promise.all([
+  const [metricDefsRaw, activitiesRaw, mealsRaw, reminderDefsRaw, factsRaw, mealPresetsRaw, exerciseDefsRaw, routineV2Raw, scheduleRaw, workoutsRaw] = await Promise.all([
     data.list("metric:"),
-    data.list("routine:"),
     data.list("activity:"),
     data.list("meal:"),
     data.list("reminder:"),
     data.list("fact:"),
-    data.list("split_plan:"),
     data.list("meal_preset:"),
     data.list("exercise:"),
     data.list("routine_v2:"),
@@ -1247,10 +977,8 @@ async function getState(data: Data) {
     data.list("workout:"),
   ]);
   const metricDefs = metricDefsRaw.map(r => r.value).filter(nonNull);
-  const routineDefs = routineDefsRaw.map(r => r.value).filter(nonNull);
   const reminderDefs = reminderDefsRaw.map(r => r.value).filter(nonNull);
   const facts = factsRaw.map(r => r.value).filter(nonNull);
-  const splitPlans = splitPlansRaw.map(r => r.value).filter(nonNull);
   const meal_presets = mealPresetsRaw.map(r => r.value).filter(nonNull);
   const exerciseDefs = exerciseDefsRaw.map(r => r.value).filter(nonNull);
   const routineV2Defs = routineV2Raw.map(r => r.value).filter(nonNull);
@@ -1264,7 +992,7 @@ async function getState(data: Data) {
     baseline: facts.filter((f: any) => f.axis === "baseline"),
   };
 
-  const [metrics, routines, reminders] = await Promise.all([
+  const [metrics, reminders] = await Promise.all([
     Promise.all(metricDefs.map(async (def: any) => {
       const allRows = await data.list(`measure:${def.slug}:`);
       const all = allRows
@@ -1283,15 +1011,6 @@ async function getState(data: Data) {
         avg_7days: avg7,
         sample_count: all.length,
       };
-    })),
-    Promise.all(routineDefs.map(async (def: any) => {
-      const sessionRows = await data.list(`session:${def.slug}:`);
-      const sessions = sessionRows
-        .map(r => ({ id: r.key, ...r.value })).filter((s: any) => s && Array.isArray(s.sets))
-        .sort((a: any, b: any) => String(a.performed_at).localeCompare(String(b.performed_at)));
-      const last: any = sessions.at(-1) ?? null;
-      const progression_state = computeProgressionState(def, sessions);
-      return { ...def, session_count: sessions.length, last_session: last, progression_state };
     })),
     Promise.all(reminderDefs.map(async (def: any) => {
       const slots = parseSchedule(def.schedule);
@@ -1333,11 +1052,6 @@ async function getState(data: Data) {
       count: meals_today_items.length,
     },
   };
-
-  const activePlan = splitPlans.find((p: any) => p.is_active) ?? null;
-  const active_split_plan = activePlan
-    ? await enrichActivePlan(activePlan, settings, data)
-    : null;
 
   // ── 새 운동 모델(v2): 운동(원자)·루틴(레시피)·배치 ──
   const exercises = exerciseDefs.map((def: any) => {
@@ -1381,13 +1095,10 @@ async function getState(data: Data) {
     server_now: nowIso(),
     server_now_local: `${today} ${hhmmInTz(settings.timezone)}`,
     metrics,
-    routines,
     recent_activities,
     meals_today,
     reminders,
     user_facts,
-    split_plans: splitPlans,
-    active_split_plan,
     meal_presets,
     // 새 운동 모델(v2)
     exercises,
@@ -1395,67 +1106,6 @@ async function getState(data: Data) {
     schedules: scheduleDefs,
     active_schedule,
   };
-}
-
-async function enrichActivePlan(plan: any, settings: any, data: Data) {
-  const kind = plan.assignment?.kind;
-  if (kind === "weekly") {
-    const wkey = weekdayKey(settings.timezone);
-    const bucketKey = plan.assignment.map?.[wkey] ?? null;
-    const bucket = bucketKey ? plan.buckets.find((b: any) => b.key === bucketKey) : null;
-    return {
-      ...plan,
-      today_bucket: bucket
-        ? { weekday: wkey, key: bucket.key, label: bucket.label, routine_slugs: bucket.routine_slugs }
-        : { weekday: wkey, key: null, label: "휴식일", routine_slugs: [] },
-      next_bucket_hint: null,
-    };
-  }
-  if (kind === "sequence") {
-    return {
-      ...plan,
-      today_bucket: null,
-      next_bucket_hint: await nextSequenceBucket(plan, data),
-    };
-  }
-  return { ...plan, today_bucket: null, next_bucket_hint: null };
-}
-
-async function nextSequenceBucket(plan: any, data: Data) {
-  const order: string[] = plan.assignment?.order ?? [];
-  if (order.length === 0) return null;
-  const bucketOf = (k: string) => plan.buckets.find((b: any) => b.key === k);
-
-  const allSessions = (await data.list("session:"))
-    .map(r => r.value).filter(nonNull)
-    .sort((a: any, b: any) => String(b.performed_at).localeCompare(String(a.performed_at)));
-
-  if (allSessions.length === 0) {
-    const first = bucketOf(order[0]);
-    return first ? {
-      key: order[0], label: first.label, routine_slugs: first.routine_slugs,
-      reason: "세션 기록 없음 — 첫 번째 차례.",
-    } : null;
-  }
-
-  for (const sess of allSessions) {
-    const found = plan.buckets.find((b: any) => Array.isArray(b.routine_slugs) && b.routine_slugs.includes(sess.slug));
-    if (!found) continue;
-    const idx = order.indexOf(found.key);
-    if (idx === -1) continue;
-    const nextIdx = (idx + 1) % order.length;
-    const next = bucketOf(order[nextIdx]);
-    if (!next) continue;
-    return {
-      key: next.key, label: next.label, routine_slugs: next.routine_slugs,
-      last_bucket_key: found.key, last_session_at: sess.performed_at,
-    };
-  }
-  const first = bucketOf(order[0]);
-  return first ? {
-    key: order[0], label: first.label, routine_slugs: first.routine_slugs,
-    reason: "최근 세션이 plan buckets 에 매칭 안 됨 — 첫 번째부터.",
-  } : null;
 }
 
 function computeProgressionState(routine: any, sessions: any[]) {
@@ -1576,19 +1226,6 @@ function parseIndex(v: any): number | null {
   return Number.isInteger(n) && n >= 0 && n < 50 ? n : null;
 }
 // 등록된 기본 입력값(working_value / target_reps). 없으면 null(=빈 칸).
-function defaultSetInput(routine: any, prog: string): any {
-  const wv = typeof routine.working_value === "number" ? routine.working_value : null;
-  if (prog === "weight") {
-    const reps = typeof routine.target_reps === "number" ? routine.target_reps
-      : typeof routine.target_reps_min === "number" ? routine.target_reps_min : null;
-    return { weight: wv, reps };
-  }
-  if (prog === "time") return { time: wv };
-  if (prog === "distance") return { distance: wv };
-  if (prog === "reps") return { reps: wv };
-  if (prog === "hold") return { hold: wv };
-  return {};
-}
 function actionToSetInput(action: any, prog: string): any {
   if (prog === "weight") return { weight: Number(action.w), reps: Number(action.r) };
   const v = Number(action.v);
@@ -1677,31 +1314,7 @@ async function loadDayWorkouts(data: Data, date: string, tz: string): Promise<an
   }
   return out;
 }
-async function loadWidgetSessions(data: Data, date: string, routines: any[]): Promise<Record<string, any>> {
-  const out: Record<string, any> = {};
-  await Promise.all(routines.map(async (r: any) => {
-    const sess = await data.get(`session:${r.slug}:${date}:widget`);
-    if (sess && Array.isArray(sess.sets)) out[r.slug] = sess;
-  }));
-  return out;
-}
 // 그 날짜에 실제로 한 모든 세션(위젯+AI)의 세트 — 지난 날 읽기 전용 표시용.
-async function loadDayRecords(data: Data, date: string, routines: any[], tz: string): Promise<Record<string, any[]>> {
-  const out: Record<string, any[]> = {};
-  await Promise.all(routines.map(async (r: any) => {
-    const rows = await data.list(`session:${r.slug}:`);
-    const sets: any[] = [];
-    for (const row of rows) {
-      const sv: any = row.value;
-      if (sv && Array.isArray(sv.sets) && sv.performed_at && dateInTz(tz, new Date(sv.performed_at)) === date) {
-        for (const st of sv.sets) sets.push(st);
-      }
-    }
-    if (sets.length > 0) out[r.slug] = sets;
-  }));
-  return out;
-}
-
 async function renderDashboard(args: any, data: Data) {
   const settings = await getSettings(data);
   const today = dateInTz(settings.timezone);
@@ -2078,92 +1691,6 @@ function collectTodayGoals(s: any): Array<{ display_name: string; unit: string |
   return list;
 }
 
-function formatRoutineOrder(routine_slugs: any[], routines: any[]): string {
-  const list = Array.isArray(routine_slugs) ? routine_slugs : [];
-  if (list.length === 0) return "";
-  const nameOf = (slug: string) => {
-    const r = routines.find((x: any) => x?.slug === slug);
-    return r?.display_name || slug;
-  };
-  return list.map((slug: any, i: number) => `${i + 1}. ${escapeHtml(nameOf(String(slug)))}`).join(" → ");
-}
-
-function renderTodayBucketCard(plan: any, routines: any[] = []): string {
-  const kind = plan.assignment?.kind;
-  let html = `<div class="card"><h3>오늘 차례 — ${escapeHtml(plan.name)}</h3>`;
-  if (kind === "weekly") {
-    const tb = plan.today_bucket;
-    if (tb?.key) {
-      html += `<div class="row"><div class="name">오늘 묶음</div><div class="val">${escapeHtml(tb.label)} <span class="meta">(${escapeHtml(tb.key)})</span></div></div>`;
-      const ordered = formatRoutineOrder(tb.routine_slugs, routines);
-      html += `<div class="row"><div class="name"><span class="meta">순서</span></div><div class="val"><span class="meta">${ordered || "없음"}</span></div></div>`;
-    } else {
-      html += `<div class="row"><div class="name">오늘</div><div class="val"><span class="meta">휴식일</span></div></div>`;
-    }
-  } else if (kind === "sequence") {
-    const h = plan.next_bucket_hint;
-    if (h) {
-      html += `<div class="row"><div class="name">다음 차례</div><div class="val">${escapeHtml(h.label)} <span class="meta">(${escapeHtml(h.key)})</span></div></div>`;
-      const ordered = formatRoutineOrder(h.routine_slugs, routines);
-      html += `<div class="row"><div class="name"><span class="meta">순서</span></div><div class="val"><span class="meta">${ordered || "없음"}</span></div></div>`;
-      if (h.last_session_at) {
-        html += `<div class="row"><div class="name"><span class="meta">직전 ${escapeHtml(h.last_bucket_key)}</span></div><div class="val"><span class="meta">${escapeHtml(String(h.last_session_at).slice(0, 10))}</span></div></div>`;
-      } else if (h.reason) {
-        html += `<div class="row"><div class="name"></div><div class="val"><span class="meta">${escapeHtml(h.reason)}</span></div></div>`;
-      }
-    }
-  } else if (kind === "freestyle") {
-    html += `<div class="row"><div class="name">자유 선택</div><div class="val">${plan.buckets.length}개 묶음 중 선택</div></div>`;
-  }
-  html += "</div>";
-  return html;
-}
-
-function renderSplitPlanCard(plan: any, routines: any[] = []): string {
-  if (!plan) {
-    return '<div class="card"><h3>분할 계획</h3><div class="empty">활성 분할 없음 — 체리피커 모드 또는 미설정.</div></div>';
-  }
-  const kind = plan.assignment?.kind;
-  let html = `<div class="card"><h3>활성 분할 — ${escapeHtml(plan.name)} <span class="meta">(${escapeHtml(kind)})</span></h3>`;
-
-  if (kind === "weekly") {
-    const WEEK_LABEL: Record<string, string> = { mon: "월", tue: "화", wed: "수", thu: "목", fri: "금", sat: "토", sun: "일" };
-    const order = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-    const todayKey = plan.today_bucket?.weekday;
-    for (const w of order) {
-      const bk = plan.assignment.map?.[w];
-      const bucket = bk ? plan.buckets.find((b: any) => b.key === bk) : null;
-      const isToday = todayKey === w;
-      const cls = isToday ? "row hi" : "row";
-      const badge = isToday ? ' <span class="badge due">오늘</span>' : "";
-      html += `<div class="${cls}"><div class="name">${WEEK_LABEL[w]}${badge}</div><div class="val">${bucket ? escapeHtml(bucket.label) : '<span class="meta">휴식</span>'}</div></div>`;
-    }
-  } else if (kind === "sequence") {
-    const nextKey = plan.next_bucket_hint?.key;
-    for (const k of plan.assignment.order) {
-      const bucket = plan.buckets.find((b: any) => b.key === k);
-      if (!bucket) continue;
-      const isNext = nextKey === k;
-      const cls = isNext ? "row hi" : "row";
-      const badge = isNext ? ' <span class="badge due">다음</span>' : "";
-      html += `<div class="${cls}"><div class="name">${escapeHtml(bucket.key)}${badge}</div><div class="val">${escapeHtml(bucket.label)}</div></div>`;
-    }
-  } else {
-    for (const bucket of plan.buckets) {
-      html += `<div class="row"><div class="name">${escapeHtml(bucket.key)}</div><div class="val">${escapeHtml(bucket.label)}</div></div>`;
-    }
-  }
-  html += "</div>";
-
-  html += `<div class="card"><h3>분할 묶음 상세 (${plan.buckets.length})</h3>`;
-  for (const b of plan.buckets) {
-    const ordered = formatRoutineOrder(b.routine_slugs, routines);
-    html += `<div class="row stacked"><div class="name">${escapeHtml(b.key)} · ${escapeHtml(b.label)}</div><div class="val">${ordered || '<span class="meta">없음</span>'}</div></div>`;
-  }
-  html += "</div>";
-  return html;
-}
-
 function renderMetricsCard(metrics: any[]): string {
   if (metrics.length === 0) {
     return '<div class="card"><h3>건강 지표</h3><div class="empty">등록된 지표 없음.</div></div>';
@@ -2185,25 +1712,6 @@ function renderMetricsCard(metrics: any[]): string {
     return `<div class="row"><div class="name">${escapeHtml(m.display_name)}${badge}</div><div class="val">${v}${trend}</div></div>`;
   }).join("");
   return `<div class="card"><h3>건강 지표 (${metrics.length})</h3>${rows}</div>`;
-}
-
-function formatRoutinePlan(r: any): string {
-  const sets = typeof r.target_sets === "number" ? r.target_sets : null;
-  if (sets === null) return "";
-  const reps = typeof r.target_reps === "number" ? r.target_reps : null;
-  const minOk = typeof r.target_reps_min === "number";
-  const maxOk = typeof r.target_reps_max === "number";
-
-  let base: string;
-  if (reps !== null) base = `${sets}×${reps}`;
-  else if (minOk && maxOk) base = `${sets}×${r.target_reps_min}-${r.target_reps_max}`;
-  else base = `${sets}세트`;
-
-  const ss = r.set_size;
-  if (ss && typeof ss.value === "number" && typeof ss.unit === "string") {
-    base += ` · 세트당 ${roundForDisplay(ss.value)}${ss.unit}`;
-  }
-  return base;
 }
 
 function formatNextSessionGoal(r: any): string {
@@ -2238,23 +1746,6 @@ function roundForDisplay(v: number): string {
   return (Math.round(v * 100) / 100).toString();
 }
 
-function formatLastSessionSummary(last: any): string {
-  if (!last) return '<span class="meta">기록 없음</span>';
-  const date = escapeHtml(String(last.performed_at).slice(0, 10));
-  const total = last.sets.length;
-  const warmupCount = last.sets.filter((s: any) => s.is_warmup === true).length;
-  const workCount = total - warmupCount;
-  const supersetBadge = last.superset_group ? ` <span class="badge due">SS</span>` : "";
-
-  if (last.is_deload === true) {
-    return `<span class="badge warn">디로드</span> ${total}세트 · ${date}${supersetBadge}`;
-  }
-  if (warmupCount > 0) {
-    return `${workCount}세트 <span class="meta">+W${warmupCount}</span> · ${date}${supersetBadge}`;
-  }
-  return `${total}세트 · ${date}${supersetBadge}`;
-}
-
 function progressionLabel(progression: string): string {
   switch (progression) {
     case "weight": return "무게 ↑";
@@ -2266,70 +1757,8 @@ function progressionLabel(progression: string): string {
   }
 }
 
-function renderRoutineBlock(r: any): string {
-  const planStr = formatRoutinePlan(r);
-  const planTag = planStr ? `<span class="tag">${escapeHtml(planStr)}</span>` : "";
-  const progTag = r.progression ? `<span class="tag dim">${escapeHtml(progressionLabel(r.progression))}</span>` : "";
-  const summary = formatLastSessionSummary(r.last_session);
-
-  // 다음 목표 — 가장 큰 라인
-  const g = r.next_session_goal;
-  let goalBlock = "";
-  if (g && typeof g.value === "number") {
-    const unit = r.unit ? ` ${escapeHtml(String(r.unit))}` : "";
-    const valStr = `${roundForDisplay(g.value)}${unit}`;
-    const srcBadge = `<span class="badge due" style="margin-left:6px">직접 지정</span>`;
-    const noteStr = g.note ? `<div class="goal-note">${SVG_NOTE}${escapeHtml(String(g.note))}</div>` : "";
-    goalBlock = `<div class="goal-line">${SVG_TARGET}다음 목표 <b>${valStr}</b>${srcBadge}${noteStr}</div>`;
-  } else {
-    goalBlock = `<div class="goal-line dim">${SVG_TARGET}다음 목표 <span class="meta">미설정 — 사용자가 "다음엔 X" 라고 말하면 그대로 기록</span></div>`;
-  }
-
-  // 능력치 라인 — 현재 / 직전 / 최고
-  const ps = r.progression_state ?? {};
-  const unit = r.unit ? ` ${escapeHtml(String(r.unit))}` : "";
-  const fmt = (v: number | null | undefined) => (typeof v === "number") ? `${roundForDisplay(v)}${unit}` : null;
-  const wv = fmt(ps.working_value);
-  const cur = fmt(ps.current_value);
-  const pr = fmt(ps.pr_value);
-  const stateParts: string[] = [];
-  if (wv) stateParts.push(`<span class="stat"><span class="stat-k">현재</span> <b>${wv}</b></span>`);
-  if (cur) {
-    const sameAsWv = wv && ps.current_value === ps.working_value;
-    if (!sameAsWv) stateParts.push(`<span class="stat"><span class="stat-k">직전</span> ${cur}</span>`);
-  }
-  if (pr) stateParts.push(`<span class="stat"><span class="stat-k">최고</span> ${pr}</span>`);
-  const stateLine = stateParts.length > 0
-    ? `<div class="stat-row">${stateParts.join("")}</div>`
-    : "";
-
-  // 메모 — 콜아웃
-  const memoBlock = r.memo
-    ? `<div class="memo">${SVG_NOTE}${escapeHtml(r.memo)}</div>`
-    : "";
-
-  return `<div class="routine">
-<div class="routine-hdr">
-<div class="routine-name">${escapeHtml(r.display_name)} ${planTag}${progTag}</div>
-<div class="routine-last">${summary}</div>
-</div>
-${goalBlock}
-${stateLine}
-${memoBlock}
-</div>`;
-}
-
 // 위: 오늘 할 운동만. 오늘이면 직접 입력·세트별 완료, 지난 날이면 그날 기록을 읽기 전용으로.
 function unitLabel(r: any): string { return r.unit ? escapeHtml(String(r.unit)) : ""; }
-function doneSetForRow(sess: any, i: number): any {
-  if (!sess || !Array.isArray(sess.sets)) return null;
-  return sess.sets.find((x: any) => x.idx === i) ?? null;
-}
-function setValueText(set: any, r: any): string {
-  const unit = unitLabel(r);
-  if (r.progression === "weight") return `${roundForDisplay(Number(set.weight))}${unit} × ${roundForDisplay(Number(set.reps))}회`;
-  return `${roundForDisplay(setValue(set, r.progression))}${unit}`;
-}
 function ymd(y: number, m: number, d: number): string {
   return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
@@ -2351,110 +1780,7 @@ function renderCalendarPopup(viewDate: string, today: string): string {
   return `<div class="cal-pop" id="calPop"><div class="cal-hd"><button class="cal-nav" onclick="goDate('${prevM}')">이전</button><span>${y}년 ${m}월</span><button class="cal-nav" onclick="goDate('${nextM}')">다음</button></div><div class="cal-grid">${wd}${cells}</div><button class="cal-today" onclick="goDate('${today}')">오늘로</button></div>`;
 }
 
-function renderTodayExercise(r: any, widgetSess: any, dayRecords: any[] | undefined, editable: boolean, isFuture: boolean): string {
-  const prog = r.progression || "weight";
-  const unit = unitLabel(r);
-  const ts = typeof r.target_sets === "number" ? r.target_sets : defaultTargetSets(prog);
-  const wv = typeof r.working_value === "number" ? r.working_value : null;
-  const defReps = typeof r.target_reps === "number" ? r.target_reps : (typeof r.target_reps_min === "number" ? r.target_reps_min : null);
-  const tag = `<span class="tag dim">${escapeHtml(progressionLabel(prog))}</span>`;
-
-  // 지난/앞날 — 읽기 전용
-  if (!editable) {
-    const sets = dayRecords || [];
-    const head = `<div class="routine-hdr"><div class="routine-name">${escapeHtml(r.display_name)} ${tag}</div><div class="routine-last">${sets.length > 0 ? `${sets.length}세트 기록` : (isFuture ? "예정" : "미기록")}</div></div>`;
-    let body = "";
-    if (sets.length > 0) {
-      for (const st of sets) body += `<div class="tw-set done"><span class="tw-chk">${SVG_CHECK}</span><span class="tw-val">${setValueText(st, r)}</span></div>`;
-    } else {
-      const di = wv !== null ? `기본값 ${ts}세트 × ${roundForDisplay(wv)}${unit}${prog === "weight" && defReps !== null ? ` × ${defReps}회` : ""}` : "";
-      body = `<div class="empty" style="padding:4px 0">${isFuture ? "이 날 계획" : "이 날 기록 없음"}${di ? ` · ${di}` : ""}</div>`;
-    }
-    return `<div class="routine tw">${head}${body}</div>`;
-  }
-
-  // 오늘 — 직접 입력·세트별 완료
-  const doneCount = widgetSess && Array.isArray(widgetSess.sets) ? widgetSess.sets.length : 0;
-  const canAll = prog === "weight" ? (wv !== null && defReps !== null) : (wv !== null);
-  let rows = "";
-  let lastDiff: any = null;
-  for (let i = 0; i < ts; i++) {
-    const done = doneSetForRow(widgetSess, i);
-    if (done) {
-      const cur = prog === "weight" ? Number(done.weight) : Number(setValue(done, prog));
-      if (wv !== null && cur !== wv) lastDiff = done;
-      rows += `<div class="tw-set done"><span class="tw-chk">${SVG_CHECK}</span><span class="tw-val">${setValueText(done, r)}</span><button class="tw-x" onclick="clearSet('${r.slug}',${i})">취소</button></div>`;
-    } else {
-      const inputs = prog === "weight"
-        ? `<input class="tw-in" name="w" type="number" inputmode="decimal" value="${wv ?? ""}" placeholder="무게"><span class="tw-u">${unit}</span><span class="tw-x2">×</span><input class="tw-in" name="r" type="number" inputmode="numeric" value="${defReps ?? ""}" placeholder="횟수"><span class="tw-u">회</span>`
-        : `<input class="tw-in" name="v" type="number" inputmode="decimal" value="${wv ?? ""}" placeholder="값"><span class="tw-u">${unit}</span>`;
-      rows += `<div class="tw-set" data-set="${r.slug}-${i}"><span class="tw-n">${i + 1}</span>${inputs}<button class="tw-do" onclick="logSet('${r.slug}',${i})">완료</button></div>`;
-    }
-  }
-  let ask = "";
-  if (lastDiff) {
-    const a = prog === "weight" ? `'${r.slug}',${Number(lastDiff.weight)},${Number(lastDiff.reps)}` : `'${r.slug}',${Number(setValue(lastDiff, prog))}`;
-    ask = `<div class="tw-ask">기본값(${wv}${unit})과 다르게 했어요. 기본값도 이 값으로 바꿀까요? <button class="tw-yes" onclick="setDefault(${a})">예</button> <span class="meta">· 아니면 그냥 두세요</span></div>`;
-  }
-  const head = `<div class="routine-hdr"><div class="routine-name">${escapeHtml(r.display_name)} ${tag}</div><div class="routine-last">${doneCount}/${ts} 완료</div></div>`;
-  const allBtn = canAll && doneCount < ts ? `<button class="tw-all" onclick="logAll('${r.slug}')">전체 확인 (기본값 ${ts}세트)</button>` : "";
-  const clearBtn = doneCount > 0 ? `<button class="tw-clear" onclick="clearAll('${r.slug}')">비우기</button>` : "";
-  const actions = (allBtn || clearBtn) ? `<div class="tw-actions">${allBtn}${clearBtn}</div>` : "";
-  return `<div class="routine tw">${head}${rows}${ask}${actions}</div>`;
-}
-
-function renderTodayWorkoutCard(s: any): string {
-  const plan = s.active_split_plan;
-  let slugs: string[] | null = null;
-  let bucketLabel = "";
-  let isRest = false;
-  if (plan?.assignment?.kind === "weekly") {
-    const bkey = plan.assignment.map?.[s.view_weekday];
-    const bucket = bkey ? plan.buckets.find((b: any) => b.key === bkey) : null;
-    if (bucket?.routine_slugs?.length > 0) { slugs = bucket.routine_slugs; bucketLabel = bucket.label; }
-    else isRest = true;
-  } else if (plan?.today_bucket?.routine_slugs?.length > 0) { slugs = plan.today_bucket.routine_slugs; bucketLabel = plan.today_bucket.label; }
-  else if (plan?.next_bucket_hint?.routine_slugs?.length > 0) { slugs = plan.next_bucket_hint.routine_slugs; bucketLabel = plan.next_bucket_hint.label; }
-
-  const editable = s.is_today !== false;
-  const date = s.view_date || s.meals_today?.date || "";
-  const today = s.today || date;
-  const isFuture = !!(date && today && date > today);
-  const title = editable ? "오늘의 운동" : (isFuture ? "예정 운동" : "지난 운동");
-
-  let html = `<div class="card today"><div class="today-top"><h3>${title}${bucketLabel ? ` · ${escapeHtml(bucketLabel)}` : ""}</h3><button class="cal-open" onclick="toggleCal()">${SVG_CAL}${escapeHtml(date)}</button></div>`;
-  html += renderCalendarPopup(date, today);
-  if (!editable) html += `<div class="today-date">읽기 전용 · <span class="lnk" onclick="goDate('${today}')">오늘로 가기</span></div>`;
-
-  const list: any[] = [];
-  if (slugs) for (const sl of slugs) { const r = s.routines.find((x: any) => x?.slug === sl); if (r) list.push(r); }
-
-  if (list.length === 0) {
-    html += `<div class="empty">${isRest ? "이 날은 휴식일이에요." : "지정된 운동이 없어요 — 아래 '나의 기록'에서 골라 기록하세요."}</div></div>`;
-    return html;
-  }
-  for (const r of list) html += renderTodayExercise(r, s.view_sessions?.[r.slug] ?? null, s.day_records?.[r.slug], editable, isFuture);
-  html += "</div>";
-  return html;
-}
-
 // 아래: 나의 기록 — 등록한 운동 전체. 기본 접힘(<details>), 길어도 화면을 안 잡아먹게.
-function renderMyRecordsCard(routines: any[], activities: any[]): string {
-  let body = "";
-  if (routines.length === 0 && activities.length === 0) {
-    body = '<div class="empty">등록된 루틴/활동 없음.</div>';
-  } else {
-    for (const r of routines) body += renderRoutineBlock(r);
-    if (activities.length > 0) {
-      body += `<div class="sub-hdr">최근 7일 자유 활동 ${activities.length}건</div>`;
-      for (const a of activities.slice(0, 5)) {
-        body += `<div class="row"><div class="name">${escapeHtml(a.name)} <span class="meta">(${escapeHtml(a.intensity)})</span></div><div class="val">${a.duration_minutes}분</div></div>`;
-      }
-    }
-  }
-  return `<div class="card"><details><summary class="card-sum"><span class="chev"></span>나의 기록 (${routines.length})</summary><div class="card-body">${body}</div></details></div>`;
-}
-
 // ════════════════════════════════════════════════════════════════════
 // 새 운동 모델(v2) 위젯 렌더 — 운동 → 루틴(블록) → 배치
 // ════════════════════════════════════════════════════════════════════
