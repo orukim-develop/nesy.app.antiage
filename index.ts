@@ -778,6 +778,58 @@ async function migrateLegacy(args: any, data: Data) {
   }
   report.schedules = { migrated: schedMigrated, routines_created: routinesCreated };
 
+  // ── 미리보기(dry-run): 사람이 읽을 수 있는 실제 데이터 + 매핑 ──
+  if (!apply) {
+    const measureLabel = (p: string) => (({ weight: "무게", time: "시간", distance: "거리", reps: "횟수", hold: "유지" } as any)[p] || p);
+    const WD: any = { sun: "일", mon: "월", tue: "화", wed: "수", thu: "목", fri: "금", sat: "토" };
+    const bucketExNames = (b: any) => (b.routine_slugs || []).map((s: string) => exDisplay.get(s) || s);
+
+    const exercisesPreview = oldRoutines.map((r: any) => {
+      const plan = typeof r.target_sets === "number"
+        ? `${r.target_sets}세트${typeof r.target_reps === "number" ? ` × ${r.target_reps}회` : (typeof r.target_reps_min === "number" ? ` × ${r.target_reps_min}-${r.target_reps_max}회` : "")}`
+        : null;
+      return {
+        name: r.display_name, slug: r.slug, measure: measureLabel(r.progression || "weight"),
+        baseline: typeof r.working_value === "number" ? `${r.working_value}${r.unit ? ` ${r.unit}` : ""}` : null,
+        plan,
+      };
+    });
+
+    const schedulesPreview = oldPlans.map((p: any) => {
+      const kind = p.assignment?.kind;
+      const out: any = {
+        name: p.name, kind, active: !!p.is_active,
+        new_routines: (p.buckets || []).map((b: any) => ({ from_bucket: b.label, new_routine_slug: `${sanitize(p.slug)}__${sanitize(b.key)}`, exercises: bucketExNames(b) })),
+      };
+      if (kind === "weekly") {
+        out.by_weekday = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].map((w) => {
+          const bk = p.assignment.map?.[w];
+          const b = bk ? p.buckets.find((x: any) => x.key === bk) : null;
+          return { day: WD[w], routine: b ? b.label : "휴식", exercises: b ? bucketExNames(b) : [] };
+        });
+      } else if (kind === "sequence") {
+        out.order = (p.assignment.order || []).map((k: string) => {
+          const b = p.buckets.find((x: any) => x.key === k);
+          return { bucket: b ? b.label : k, exercises: b ? bucketExNames(b) : [] };
+        });
+      }
+      return out;
+    });
+
+    const sessMap = new Map<string, { count: number; last: string | null }>();
+    for (const s of sessions) {
+      const e = sessMap.get(s.slug) || { count: 0, last: null };
+      e.count++;
+      if (!e.last || String(s.performed_at) > e.last) e.last = s.performed_at;
+      sessMap.set(s.slug, e);
+    }
+    const sessionsPreview = [...sessMap.entries()]
+      .map(([slug, v]) => ({ name: exDisplay.get(slug) || slug, sessions: v.count, last: v.last ? String(v.last).slice(0, 10) : null }))
+      .sort((a, b) => b.sessions - a.sessions);
+
+    report.preview = { exercises: exercisesPreview, schedules: schedulesPreview, sessions_by_exercise: sessionsPreview };
+  }
+
   // ── 4. 옛 키 삭제 (apply 시, 새 키 기록 후) ──
   if (apply) {
     let dr = 0, dp = 0, ds = 0;
