@@ -453,8 +453,30 @@ tools:
               type: string
       required: [slug]
 
-  # NOTE(임시): update_routine 은 마이그레이션(migrate_legacy)을 위해 16개 제한에 맞추려 잠깐 뺐다.
-  #   핸들러·dispatch 는 index.ts 에 그대로 있음. 마이그레이션 완료 후 이 항목 복원 + migrate_legacy 제거.
+  - name: update_routine
+    description: |
+      등록된 루틴(define_routine)의 라벨·원문·블록·메모를 부분 업데이트한다 (patch). 사용자가 '이 루틴에서 로우 빼줘' 처럼 말하면 AI 가 새 blocks 로 다시 구조화해 넣는다.
+      같은 slug 의 루틴이 이미 있어야 함. 제공된 필드만 덮어쓴다. blocks 를 주면 통째로 교체(부분 아님).
+    inputSchema:
+      type: object
+      properties:
+        slug:
+          type: string
+          description: 업데이트할 루틴의 slug.
+        display_name:
+          type: string
+          description: "선택. 루틴 이름 새 값(1~200자)."
+        source_text:
+          type: string
+          description: "선택. 사용자 원문 새 값(0~2000자). null 또는 빈 문자열로 클리어."
+        blocks:
+          type: array
+          description: "선택. 블록 배열 통째 교체(define_routine 과 같은 형식, 1개 이상)."
+        memo:
+          type: string
+          description: "선택. 메모(0~1000자). null 또는 빈 문자열로 클리어."
+      required: [slug]
+
   - name: delete_entity
     description: |
       등록된 entity 또는 과거 기록 한 건을 삭제한다. 사용자가 명시적으로 "지워줘" / "잘못 입력했어" 라고 한 경우에만 호출.
@@ -484,20 +506,6 @@ tools:
           type: string
           description: "kind=fact 일 때만 필수. exercise / health_metric / diet_reminder / baseline 중 하나."
       required: [kind, id]
-
-  - name: migrate_legacy
-    description: |
-      [일회용] 옛 운동 데이터(v1: routine/split_plan/session)를 새 모델(v2: exercise/routine_v2/schedule/workout)로 옮긴다.
-      기본은 미리보기(dry-run) — 무엇을 옮길지 보고만 하고 쓰지 않는다. apply:true 일 때만 실제로 새 키 기록 + 옛 키 삭제.
-      매핑: working_value→baseline_value, target_*→default_*, 슈퍼셋(superset_group)은 superset 블록으로 복원, 분할 묶음은 묶음마다 routine_v2 생성 후 schedule 이 가리킴.
-      여러 번 실행해도 안전(이미 있는 새 키는 건너뜀). 마이그레이션 완료 후 이 도구는 제거 예정.
-      반환: { migration: { mode, exercises, workouts, schedules, deletions, warnings } }
-    inputSchema:
-      type: object
-      properties:
-        apply:
-          type: boolean
-          description: "false(기본)=미리보기만. true=실제 적용(새 키 기록 + 옛 키 삭제)."
 
   - name: get_state
     description: |
