@@ -827,7 +827,18 @@ async function migrateLegacy(args: any, data: Data) {
       .map(([slug, v]) => ({ name: exDisplay.get(slug) || slug, sessions: v.count, last: v.last ? String(v.last).slice(0, 10) : null }))
       .sort((a, b) => b.sessions - a.sessions);
 
-    report.preview = { exercises: exercisesPreview, schedules: schedulesPreview, sessions_by_exercise: sessionsPreview };
+    const supersetGroups: any[] = [];
+    for (const [gid, grp] of groups) {
+      if (gid.startsWith("ss:") && grp.length >= 2) {
+        supersetGroups.push({
+          date: (grp.map((s: any) => s.performed_at).filter(Boolean).sort()[0] || "").slice(0, 10),
+          exercises: grp.map((s: any) => exDisplay.get(s.slug) || s.slug),
+        });
+      }
+    }
+    supersetGroups.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+    report.preview = { exercises: exercisesPreview, schedules: schedulesPreview, superset_groups: supersetGroups, sessions_by_exercise: sessionsPreview };
   }
 
   // ── 4. 옛 키 삭제 (apply 시, 새 키 기록 후) ──
