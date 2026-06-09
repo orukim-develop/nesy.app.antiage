@@ -601,10 +601,10 @@ async function seedV1(data: any) {
   await data.set("split_plan:wk", { slug: "wk", name: "주간", buckets: [{ key: "a", label: "상체", routine_slugs: ["bench", "row"] }, { key: "b", label: "하체", routine_slugs: ["squat"] }], assignment: { kind: "weekly", map: { mon: "a", tue: "b", wed: null, thu: "a", fri: "b", sat: null, sun: null } }, is_active: true, defined_at: "2026-04-01T00:00:00.000Z" });
 }
 
-test("migrate_v1 dry-run — 쓰지 않고 무엇을 옮길지 보고만", async () => {
+test("migrate_legacy dry-run — 쓰지 않고 무엇을 옮길지 보고만", async () => {
   const data = makeData();
   await seedV1(data);
-  const m = (await call(data, "migrate_v1", {})).migration;
+  const m = (await call(data, "migrate_legacy", {})).migration;
   eq(m.mode, "dry-run", "dry-run 모드");
   eq(m.exercises.migrated.length, 3, "운동 3개");
   eq(m.workouts.from_sessions, 3, "세션 3건");
@@ -618,10 +618,10 @@ test("migrate_v1 dry-run — 쓰지 않고 무엇을 옮길지 보고만", async
   assert(await data.get("routine:bench"), "옛 데이터 보존");
 });
 
-test("migrate_v1 apply — 새 모델로 옮기고 옛 키 삭제, 추이 보존", async () => {
+test("migrate_legacy apply — 새 모델로 옮기고 옛 키 삭제, 추이 보존", async () => {
   const data = makeData();
   await seedV1(data);
-  const m = (await call(data, "migrate_v1", { apply: true })).migration;
+  const m = (await call(data, "migrate_legacy", { apply: true })).migration;
   eq(m.mode, "applied", "applied 모드");
 
   // 운동 매핑
@@ -660,11 +660,11 @@ test("migrate_v1 apply — 새 모델로 옮기고 옛 키 삭제, 추이 보존
   assert(s.active_schedule && s.active_schedule.name === "주간", "배치 활성 노출");
 });
 
-test("migrate_v1 재실행 안전 — 적용 후 다시 돌리면 no-op", async () => {
+test("migrate_legacy 재실행 안전 — 적용 후 다시 돌리면 no-op", async () => {
   const data = makeData();
   await seedV1(data);
-  await call(data, "migrate_v1", { apply: true });
-  const m2 = (await call(data, "migrate_v1", { apply: true })).migration;
+  await call(data, "migrate_legacy", { apply: true });
+  const m2 = (await call(data, "migrate_legacy", { apply: true })).migration;
   eq(m2.exercises.migrated.length, 0, "옮길 옛 운동 없음");
   eq(m2.workouts.from_sessions, 0, "옮길 옛 세션 없음");
   eq(m2.schedules.migrated.length, 0, "옮길 옛 분할 없음");
@@ -672,11 +672,11 @@ test("migrate_v1 재실행 안전 — 적용 후 다시 돌리면 no-op", async 
   eq((await data.get("exercise:bench")).baseline_value, 80, "새 데이터 유지");
 });
 
-test("migrate_v1 — 새 키 이미 있으면 건너뜀(덮어쓰기 안 함)", async () => {
+test("migrate_legacy — 새 키 이미 있으면 건너뜀(덮어쓰기 안 함)", async () => {
   const data = makeData();
   await seedV1(data);
   await data.set("exercise:bench", { slug: "bench", display_name: "내가 만든 벤치", progression: "weight", unit: "kg", baseline_value: 999 });
-  const m = (await call(data, "migrate_v1", { apply: true })).migration;
+  const m = (await call(data, "migrate_legacy", { apply: true })).migration;
   assert(m.exercises.skipped_existing.includes("bench"), "기존 새 키는 건너뜀");
   eq((await data.get("exercise:bench")).baseline_value, 999, "새 데이터 보존(덮어쓰기 안 함)");
 });

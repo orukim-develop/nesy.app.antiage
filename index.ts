@@ -1,3 +1,4 @@
+// nesy.app.health 운동 마도서 — v2 (운동→루틴→배치). 옛 데이터 이전: migrate_legacy.
 type Data = {
   get: (key: string) => Promise<any>;
   set: (key: string, value: any) => Promise<void>;
@@ -92,7 +93,7 @@ async function dispatchTool(tool: string, args: Record<string, any>, data: Data)
     case "ack_reminder": return ackReminder(args, data);
     case "define_user_fact": return defineUserFact(args, data);
     case "delete_entity": return deleteEntity(args, data);
-    case "migrate_v1": return migrateV1(args, data);
+    case "migrate_legacy": return migrateLegacy(args, data);
     case "get_state": return getState(data);
     case "check_reminders": return checkReminders(data);
     case "render_dashboard": return renderDashboard(args, data);
@@ -683,7 +684,7 @@ function collectExerciseSessions(workouts: any[], exerciseSlug: string): any[] {
 
 // 일회용 마이그레이션: v1(routine/split_plan/session) → v2(exercise/routine_v2/schedule/workout).
 //   기본은 미리보기(dry-run). apply:true 면 새 키 기록 후 옛 키 삭제. 여러 번 돌려도 안전(이미 있으면 건너뜀).
-async function migrateV1(args: any, data: Data) {
+async function migrateLegacy(args: any, data: Data) {
   const apply = args.apply === true;
   const report: any = { mode: apply ? "applied" : "dry-run", exercises: {}, workouts: {}, schedules: {}, deletions: {}, warnings: [] };
 

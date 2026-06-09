@@ -507,7 +507,7 @@ tools:
           description: "kind=fact 일 때만 필수. exercise / health_metric / diet_reminder / baseline 중 하나."
       required: [kind, id]
 
-  - name: migrate_v1
+  - name: migrate_legacy
     description: |
       [일회용] 옛 운동 데이터(v1: routine/split_plan/session)를 새 모델(v2: exercise/routine_v2/schedule/workout)로 옮긴다.
       기본은 미리보기(dry-run) — 무엇을 옮길지 보고만 하고 쓰지 않는다. apply:true 일 때만 실제로 새 키 기록 + 옛 키 삭제.
