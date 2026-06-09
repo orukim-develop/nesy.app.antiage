@@ -92,6 +92,7 @@ async function dispatchTool(tool: string, args: Record<string, any>, data: Data)
     case "ack_reminder": return ackReminder(args, data);
     case "define_user_fact": return defineUserFact(args, data);
     case "delete_entity": return deleteEntity(args, data);
+    case "migrate_v1": return migrateV1(args, data);
     case "get_state": return getState(data);
     case "check_reminders": return checkReminders(data);
     case "render_dashboard": return renderDashboard(args, data);
@@ -678,6 +679,119 @@ function collectExerciseSessions(workouts: any[], exerciseSlug: string): any[] {
   }
   sessions.sort((a, b) => String(a.performed_at).localeCompare(String(b.performed_at)));
   return sessions;
+}
+
+// 일회용 마이그레이션: v1(routine/split_plan/session) → v2(exercise/routine_v2/schedule/workout).
+//   기본은 미리보기(dry-run). apply:true 면 새 키 기록 후 옛 키 삭제. 여러 번 돌려도 안전(이미 있으면 건너뜀).
+async function migrateV1(args: any, data: Data) {
+  const apply = args.apply === true;
+  const report: any = { mode: apply ? "applied" : "dry-run", exercises: {}, workouts: {}, schedules: {}, deletions: {}, warnings: [] };
+
+  const oldRoutines = (await data.list("routine:")).map((r: any) => r.value).filter(nonNull);
+  const oldPlans = (await data.list("split_plan:")).map((r: any) => r.value).filter(nonNull);
+  const oldSessionRows = (await data.list("session:")).filter((r: any) => r.value && Array.isArray(r.value.sets));
+
+  const exDisplay = new Map<string, string>();
+  for (const r of oldRoutines) exDisplay.set(r.slug, r.display_name || r.slug);
+
+  // ── 1. 운동: routine: → exercise: ──
+  const exMigrated: string[] = [], exSkipped: string[] = [];
+  for (const r of oldRoutines) {
+    const key = `exercise:${r.slug}`;
+    if (await data.get(key)) { exSkipped.push(r.slug); continue; }
+    const wv = typeof r.working_value === "number" ? r.working_value : null;
+    const ex = {
+      slug: r.slug, display_name: r.display_name, progression: r.progression || "weight",
+      unit: r.unit, category: r.category ?? null,
+      default_sets: typeof r.target_sets === "number" ? r.target_sets : defaultTargetSets(r.progression || "weight"),
+      default_reps: typeof r.target_reps === "number" ? r.target_reps : null,
+      default_reps_min: typeof r.target_reps_min === "number" ? r.target_reps_min : null,
+      default_reps_max: typeof r.target_reps_max === "number" ? r.target_reps_max : null,
+      set_size: r.set_size ?? null,
+      baseline_value: wv,
+      baseline_source: wv !== null ? "manual" : null,
+      baseline_updated_at: r.updated_at ?? r.defined_at ?? null,
+      next_session_goal: r.next_session_goal ?? null,
+      memo: r.memo ?? null,
+      defined_at: r.defined_at ?? nowIso(),
+    };
+    if (apply) await data.set(key, ex);
+    exMigrated.push(r.slug);
+  }
+  report.exercises = { migrated: exMigrated, skipped_existing: exSkipped };
+
+  // ── 2. 기록: session: → workout: (슈퍼셋 그룹 복원) ──
+  const sessions = oldSessionRows.map((r: any) => ({ key: r.key, ...r.value }));
+  const groups = new Map<string, any[]>();
+  for (const s of sessions) {
+    const ss = (typeof s.superset_group === "string" && s.superset_group) ? s.superset_group : null;
+    const gid = ss ? `ss:${ss}` : `one:${s.key}`;
+    if (!groups.has(gid)) groups.set(gid, []);
+    groups.get(gid)!.push(s);
+  }
+  let ssCount = 0, singleCount = 0, wkWritten = 0, wkSkipped = 0;
+  for (const [gid, grp] of groups) {
+    const performed_at = grp.map((s: any) => s.performed_at).filter(Boolean).sort()[0] ?? nowIso();
+    const is_deload = grp.some((s: any) => s.is_deload === true);
+    const note = grp.map((s: any) => s.note).find(Boolean);
+    const isSS = gid.startsWith("ss:") && grp.length >= 2;
+    if (isSS) ssCount++; else singleCount++;
+    const entries = grp.map((s: any) => ({
+      exercise_slug: s.slug,
+      sets: (Array.isArray(s.sets) ? s.sets : []).map((st: any, i: number) => ({ ...st, idx: typeof st.idx === "number" ? st.idx : i })),
+    }));
+    const block = { block_id: "b1", kind: isSS ? "superset" : "straight", entries };
+    const suffix = gid.startsWith("ss:") ? `s_${gid.slice(3).replace(/[^a-z0-9]/gi, "")}` : `m_${gid.split(":").pop()}`;
+    const wkey = `workout:_adhoc:${performed_at}:${suffix}`;
+    if (await data.get(wkey)) { wkSkipped++; continue; }
+    const workout: any = { routine_slug: "_adhoc", blocks: [block], performed_at, is_deload, source: "migrated" };
+    if (note) workout.note = note;
+    if (apply) await data.set(wkey, workout);
+    wkWritten++;
+  }
+  report.workouts = { from_sessions: sessions.length, superset_groups: ssCount, singles: singleCount, written: wkWritten, skipped_existing: wkSkipped };
+
+  // ── 3. 분할: split_plan: → schedule: (+ 묶음마다 routine_v2 생성) ──
+  const schedMigrated: string[] = [], routinesCreated: string[] = [];
+  const sanitize = (s: string) => (String(s).toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/^[^a-z]+/, "") || "r");
+  for (const p of oldPlans) {
+    const newBuckets: any[] = [];
+    for (const b of (p.buckets || [])) {
+      const rSlug = `${sanitize(p.slug)}__${sanitize(b.key)}`;
+      const blocks = (b.routine_slugs || []).map((exSlug: string, i: number) => ({
+        block_id: `b${i + 1}`, kind: "straight", label: exDisplay.get(exSlug) || exSlug,
+        items: [{ exercise_slug: exSlug }], prescription: {}, params: {}, note: null,
+      }));
+      const rkey = `routine_v2:${rSlug}`;
+      if (!(await data.get(rkey))) {
+        if (apply) await data.set(rkey, { slug: rSlug, display_name: b.label, source_text: null, blocks, memo: null, defined_at: p.defined_at ?? nowIso() });
+        routinesCreated.push(rSlug);
+      }
+      newBuckets.push({ key: b.key, label: b.label, routine_v2_slugs: [rSlug] });
+    }
+    const skey = `schedule:${p.slug}`;
+    if (!(await data.get(skey))) {
+      if (apply) await data.set(skey, { slug: p.slug, name: p.name, buckets: newBuckets, assignment: p.assignment, is_active: !!p.is_active, defined_at: p.defined_at ?? nowIso() });
+      schedMigrated.push(p.slug);
+    } else report.warnings.push(`schedule:${p.slug} 이미 존재 — 건너뜀`);
+  }
+  report.schedules = { migrated: schedMigrated, routines_created: routinesCreated };
+
+  // ── 4. 옛 키 삭제 (apply 시, 새 키 기록 후) ──
+  if (apply) {
+    let dr = 0, dp = 0, ds = 0;
+    for (const r of (await data.list("routine:"))) { await data.delete(r.key); dr++; }
+    for (const r of (await data.list("split_plan:"))) { await data.delete(r.key); dp++; }
+    for (const r of (await data.list("session:"))) { await data.delete(r.key); ds++; }
+    report.deletions = { old_routine: dr, old_split_plan: dp, old_session: ds };
+  } else {
+    report.deletions = {
+      would_delete_old_routine: (await data.list("routine:")).length,
+      would_delete_old_split_plan: (await data.list("split_plan:")).length,
+      would_delete_old_session: (await data.list("session:")).length,
+    };
+  }
+  return { migration: report };
 }
 
 async function defineMetric(args: any, data: Data) {

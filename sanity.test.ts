@@ -589,6 +589,98 @@ test("render_dashboard 운동탭 — 2회 이상 기록 시 추세 미니 그래
   assert(/class="spark"/.test(r.html), "스파크라인 SVG 표시");
 });
 
+// ── 마이그레이션 v1 → v2 ───────────────────────────────
+async function seedV1(data: any) {
+  await data.set("routine:bench", { slug: "bench", display_name: "벤치", progression: "weight", unit: "kg", category: "compound", target_sets: 3, target_reps: 5, target_reps_min: null, target_reps_max: null, working_value: 80, memo: "가슴", set_size: null, defined_at: "2026-04-01T00:00:00.000Z", next_session_goal: { value: 85, source: "manual", note: "다음엔", computed_at: "2026-04-01T00:00:00.000Z" } });
+  await data.set("routine:row", { slug: "row", display_name: "바벨로우", progression: "weight", unit: "kg", category: "compound", target_sets: 3, target_reps: 8, working_value: 60, defined_at: "2026-04-01T00:00:00.000Z" });
+  await data.set("routine:squat", { slug: "squat", display_name: "스쿼트", progression: "weight", unit: "kg", category: "compound", working_value: 100, defined_at: "2026-04-01T00:00:00.000Z" });
+  // 슈퍼셋(같은 superset_group) 2건 + 단일 1건
+  await data.set("session:bench:2026-05-01T18:00:00.000Z:r1", { slug: "bench", sets: [{ reps: 5, weight: 80, rpe: 7, is_warmup: false }], performed_at: "2026-05-01T18:00:00.000Z", progression: "weight", is_deload: false, superset_group: "ss-abc" });
+  await data.set("session:row:2026-05-01T18:00:00.000Z:r2", { slug: "row", sets: [{ reps: 8, weight: 60, is_warmup: false }], performed_at: "2026-05-01T18:00:00.000Z", progression: "weight", is_deload: false, superset_group: "ss-abc" });
+  await data.set("session:squat:2026-05-02T18:00:00.000Z:r3", { slug: "squat", sets: [{ reps: 5, weight: 100 }], performed_at: "2026-05-02T18:00:00.000Z", progression: "weight", is_deload: false, superset_group: null });
+  await data.set("split_plan:wk", { slug: "wk", name: "주간", buckets: [{ key: "a", label: "상체", routine_slugs: ["bench", "row"] }, { key: "b", label: "하체", routine_slugs: ["squat"] }], assignment: { kind: "weekly", map: { mon: "a", tue: "b", wed: null, thu: "a", fri: "b", sat: null, sun: null } }, is_active: true, defined_at: "2026-04-01T00:00:00.000Z" });
+}
+
+test("migrate_v1 dry-run — 쓰지 않고 무엇을 옮길지 보고만", async () => {
+  const data = makeData();
+  await seedV1(data);
+  const m = (await call(data, "migrate_v1", {})).migration;
+  eq(m.mode, "dry-run", "dry-run 모드");
+  eq(m.exercises.migrated.length, 3, "운동 3개");
+  eq(m.workouts.from_sessions, 3, "세션 3건");
+  eq(m.workouts.superset_groups, 1, "슈퍼셋 그룹 1");
+  eq(m.workouts.singles, 1, "단일 1");
+  eq(m.schedules.migrated.length, 1, "배치 1");
+  eq(m.schedules.routines_created.length, 2, "묶음→루틴 2개");
+  // 아무것도 안 씀 / 옛 데이터 그대로
+  eq(await data.get("exercise:bench"), null, "dry-run 은 쓰지 않음");
+  eq(await data.get("schedule:wk"), null, "dry-run 은 쓰지 않음");
+  assert(await data.get("routine:bench"), "옛 데이터 보존");
+});
+
+test("migrate_v1 apply — 새 모델로 옮기고 옛 키 삭제, 추이 보존", async () => {
+  const data = makeData();
+  await seedV1(data);
+  const m = (await call(data, "migrate_v1", { apply: true })).migration;
+  eq(m.mode, "applied", "applied 모드");
+
+  // 운동 매핑
+  const exB = await data.get("exercise:bench");
+  eq(exB.baseline_value, 80, "working_value→baseline_value");
+  eq(exB.baseline_source, "manual", "baseline_source");
+  eq(exB.default_sets, 3, "target_sets→default_sets");
+  eq(exB.default_reps, 5, "target_reps→default_reps");
+  eq(exB.next_session_goal.value, 85, "다음 목표 보존");
+
+  // 분할→배치 + 루틴
+  const sch = await data.get("schedule:wk");
+  assert(sch && sch.is_active === true, "schedule 활성");
+  eq(sch.buckets[0].routine_v2_slugs[0], "wk__a", "묶음이 루틴 가리킴");
+  const rA = await data.get("routine_v2:wk__a");
+  eq(rA.blocks.length, 2, "상체 루틴 2블록(벤치/로우)");
+  eq(rA.blocks[0].items[0].exercise_slug, "bench", "블록 운동 참조");
+  eq(rA.display_name, "상체", "루틴 이름=묶음 label");
+
+  // 슈퍼셋 복원
+  const wk = (await data.list("workout:")).map((r: any) => r.value);
+  const ss = wk.find((w: any) => w.blocks[0].kind === "superset");
+  assert(ss, "슈퍼셋 workout 존재");
+  eq(ss.blocks[0].entries.length, 2, "슈퍼셋에 운동 2개");
+
+  // 옛 키 삭제
+  eq(await data.get("routine:bench"), null, "옛 운동 삭제");
+  eq(await data.get("split_plan:wk"), null, "옛 분할 삭제");
+  eq((await data.list("session:")).length, 0, "옛 세션 전부 삭제");
+
+  // 추이 보존 — get_state 가 새 데이터로 계산
+  const s = await call(data, "get_state");
+  const gex = s.exercises.find((x: any) => x.slug === "bench");
+  assert(gex && gex.session_count >= 1, "기록 이어짐");
+  eq(gex.progression_state.pr_value, 80, "최고기록 보존");
+  assert(s.active_schedule && s.active_schedule.name === "주간", "배치 활성 노출");
+});
+
+test("migrate_v1 재실행 안전 — 적용 후 다시 돌리면 no-op", async () => {
+  const data = makeData();
+  await seedV1(data);
+  await call(data, "migrate_v1", { apply: true });
+  const m2 = (await call(data, "migrate_v1", { apply: true })).migration;
+  eq(m2.exercises.migrated.length, 0, "옮길 옛 운동 없음");
+  eq(m2.workouts.from_sessions, 0, "옮길 옛 세션 없음");
+  eq(m2.schedules.migrated.length, 0, "옮길 옛 분할 없음");
+  // 새 데이터는 그대로
+  eq((await data.get("exercise:bench")).baseline_value, 80, "새 데이터 유지");
+});
+
+test("migrate_v1 — 새 키 이미 있으면 건너뜀(덮어쓰기 안 함)", async () => {
+  const data = makeData();
+  await seedV1(data);
+  await data.set("exercise:bench", { slug: "bench", display_name: "내가 만든 벤치", progression: "weight", unit: "kg", baseline_value: 999 });
+  const m = (await call(data, "migrate_v1", { apply: true })).migration;
+  assert(m.exercises.skipped_existing.includes("bench"), "기존 새 키는 건너뜀");
+  eq((await data.get("exercise:bench")).baseline_value, 999, "새 데이터 보존(덮어쓰기 안 함)");
+});
+
 // ── 실행 ───────────────────────────────────────────────
 (async () => {
   for (const t of tests) {

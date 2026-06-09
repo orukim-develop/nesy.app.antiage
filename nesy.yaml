@@ -507,6 +507,20 @@ tools:
           description: "kind=fact 일 때만 필수. exercise / health_metric / diet_reminder / baseline 중 하나."
       required: [kind, id]
 
+  - name: migrate_v1
+    description: |
+      [일회용] 옛 운동 데이터(v1: routine/split_plan/session)를 새 모델(v2: exercise/routine_v2/schedule/workout)로 옮긴다.
+      기본은 미리보기(dry-run) — 무엇을 옮길지 보고만 하고 쓰지 않는다. apply:true 일 때만 실제로 새 키 기록 + 옛 키 삭제.
+      매핑: working_value→baseline_value, target_*→default_*, 슈퍼셋(superset_group)은 superset 블록으로 복원, 분할 묶음은 묶음마다 routine_v2 생성 후 schedule 이 가리킴.
+      여러 번 실행해도 안전(이미 있는 새 키는 건너뜀). 마이그레이션 완료 후 이 도구는 제거 예정.
+      반환: { migration: { mode, exercises, workouts, schedules, deletions, warnings } }
+    inputSchema:
+      type: object
+      properties:
+        apply:
+          type: boolean
+          description: "false(기본)=미리보기만. true=실제 적용(새 키 기록 + 옛 키 삭제)."
+
   - name: get_state
     description: |
       마도서의 현재 상태를 통째로 반환한다 — 응답에 앞서 반드시 호출. 기록·시각화 전용이라 어떤 추천값도 계산하지 않는다.
