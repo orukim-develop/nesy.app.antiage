@@ -453,30 +453,8 @@ tools:
               type: string
       required: [slug]
 
-  - name: update_routine
-    description: |
-      등록된 루틴(define_routine)의 라벨·원문·블록·메모를 부분 업데이트한다 (patch). 사용자가 '이 루틴에서 로우 빼줘' 처럼 말하면 AI 가 새 blocks 로 다시 구조화해 넣는다.
-      같은 slug 의 루틴이 이미 있어야 함. 제공된 필드만 덮어쓴다. blocks 를 주면 통째로 교체(부분 아님).
-    inputSchema:
-      type: object
-      properties:
-        slug:
-          type: string
-          description: 업데이트할 루틴의 slug.
-        display_name:
-          type: string
-          description: "선택. 루틴 이름 새 값(1~200자)."
-        source_text:
-          type: string
-          description: "선택. 사용자 원문 새 값(0~2000자). null 또는 빈 문자열로 클리어."
-        blocks:
-          type: array
-          description: "선택. 블록 배열 통째 교체(define_routine 과 같은 형식, 1개 이상)."
-        memo:
-          type: string
-          description: "선택. 메모(0~1000자). null 또는 빈 문자열로 클리어."
-      required: [slug]
-
+  # NOTE(임시): update_routine 은 마이그레이션(migrate_legacy)을 위해 16개 제한에 맞추려 잠깐 뺐다.
+  #   핸들러·dispatch 는 index.ts 에 그대로 있음. 마이그레이션 완료 후 이 항목 복원 + migrate_legacy 제거.
   - name: delete_entity
     description: |
       등록된 entity 또는 과거 기록 한 건을 삭제한다. 사용자가 명시적으로 "지워줘" / "잘못 입력했어" 라고 한 경우에만 호출.
